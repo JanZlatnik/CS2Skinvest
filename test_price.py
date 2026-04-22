@@ -15,8 +15,8 @@ def check_single_price(item_name):
         "sort_by": "lowest_price",
         "state": "listed",
         "type": "buy_now",
-        #"paint_seed": 651,
-        "max_float": 0.304497421,
+        "paint_seed": 651,
+        "max_float": 0.1,
     }
     
     response = requests.get(url, headers=headers, params=params)
@@ -45,4 +45,4 @@ def check_single_price(item_name):
         print(f"Response: {response.text}")
 
 if __name__ == "__main__":
-    check_single_price("AK-47 | Midnight Laminate (Field-Tested)")
+    check_single_price("★ Skeleton Knife | Fade (Factory New)")

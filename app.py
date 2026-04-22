@@ -2,11 +2,13 @@ import streamlit as st
 import requests
 from dotenv import load_dotenv
 import os
+from PIL import Image
 
 load_dotenv()
 API_KEY = os.getenv("CSFLOAT_API_KEY")
 
-st.set_page_config(page_title="CS2 Tracker", layout="wide", page_icon="📈")
+img_icon = Image.open("assets/icon.png")
+st.set_page_config(page_title="CS2 SkInvest", layout="wide", page_icon=img_icon)
 
 # ── Hide the auto-generated sidebar nav so we can build our own in the right order ──
 st.markdown("""
