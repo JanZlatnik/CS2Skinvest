@@ -15,12 +15,11 @@ ITEM_TYPE_OPTS = [
     "Charm", "Patch", "Collectible", "Music Kit", "Unknown"
 ]
 
-# Supported input currencies (display label → ISO code)
 CURRENCIES = {
-    "USD ($)": "USD",
-    "EUR (€)": "EUR",
+    "USD ($)":  "USD",
+    "EUR (€)":  "EUR",
     "CZK (Kč)": "CZK",
-    "GBP (£)": "GBP",
+    "GBP (£)":  "GBP",
     "PLN (zł)": "PLN",
     "HUF (Ft)": "HUF",
     "CHF (Fr)": "CHF",
@@ -28,20 +27,18 @@ CURRENCIES = {
     "AUD (A$)": "AUD",
 }
 
-# ── Frankfurter exchange rate API (ECB data, no key needed) ───────────────────
+# Armory pass: 40 stars = $15.99
+STAR_TO_USD = 15.99 / 40   # $0.39975 per star
+
+
+# ── Exchange rate ──────────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_rate_on_date(from_currency: str, to_currency: str = "USD",
                      on_date: str | None = None) -> float | None:
-    """
-    Return exchange rate from_currency → to_currency on a given date.
-    Uses Frankfurter API (ECB data). Cached per hour.
-    Returns None on failure (caller should fall back to raw price).
-    """
     if from_currency == to_currency:
         return 1.0
     try:
-        # Use latest if date is today or future, otherwise historical
         endpoint = "latest" if on_date is None else on_date
         r = requests.get(
             f"https://api.frankfurter.dev/v2/{endpoint}",
@@ -49,27 +46,23 @@ def get_rate_on_date(from_currency: str, to_currency: str = "USD",
             timeout=5,
         )
         if r.status_code == 200:
-            data = r.json()
-            rates = data.get("rates", {})
-            return float(rates.get(to_currency, 0)) or None
+            return float(r.json().get("rates", {}).get(to_currency, 0)) or None
     except Exception:
         pass
     return None
 
 
 def convert_to_usd(amount: float, currency: str, on_date: str | None = None) -> float:
-    """Convert amount in currency to USD using ECB rate for the given date."""
     if currency == "USD":
         return amount
     rate = get_rate_on_date(currency, "USD", on_date)
     if rate:
         return round(amount * rate, 2)
-    # Fallback: return unconverted with warning
-    st.warning(f"Could not fetch {currency}/USD rate for {on_date or 'today'} — price saved as-is.")
+    st.warning(f"Could not fetch {currency}/USD rate for {on_date or 'today'} — saved as-is.")
     return amount
 
 
-# ── Steam Market search ───────────────────────────────────────────────────────
+# ── Steam Market search ────────────────────────────────────────────────────────
 
 def steam_search(query: str) -> list[str]:
     try:
@@ -87,7 +80,7 @@ def steam_search(query: str) -> list[str]:
     return []
 
 
-# ── Auto-fill helpers ─────────────────────────────────────────────────────────
+# ── Auto-fill helpers ──────────────────────────────────────────────────────────
 
 def infer_wear(name: str) -> str:
     for w in ["Factory New", "Minimal Wear", "Field-Tested", "Well-Worn", "Battle-Scarred"]:
@@ -113,7 +106,19 @@ def infer_category(name: str) -> str:
     return "Normal"
 
 
-# ── Session state ─────────────────────────────────────────────────────────────
+# ── CSV helper ─────────────────────────────────────────────────────────────────
+
+def _append_row(row: dict):
+    os.makedirs("data", exist_ok=True)
+    if os.path.exists(MANUAL_CSV):
+        existing = pd.read_csv(MANUAL_CSV)
+        updated  = pd.concat([existing, pd.DataFrame([row])], ignore_index=True)
+    else:
+        updated = pd.DataFrame([row])
+    updated.to_csv(MANUAL_CSV, index=False)
+
+
+# ── Session state ──────────────────────────────────────────────────────────────
 
 def _init_state():
     defaults = {
@@ -130,61 +135,50 @@ def _init_state():
 
 _init_state()
 
-# ── Sidebar – Controls only (user info + nav are rendered by app.py) ──────────
-with st.sidebar:
-    st.header("⚙️ Controls")
-
-    if st.button("📦 Sync Inventory", use_container_width=True,
-                 help="Fetch new trades from CSFloat, rebuild inventory"):
-        with st.spinner("Fetching trades & rebuilding inventory…"):
-            n = processor.sync_inventory()
-            st.cache_data.clear()
-            st.success(f"Inventory updated — {n} active items")
-            st.rerun()
-
-    if st.button("💰 Sync Prices", use_container_width=True,
-                 help="Fetch latest prices from CSFloat & Steam"):
-        st.switch_page("pages/sync_page.py")
-
-    st.divider()
-    inv_sync   = database.meta_get("last_inventory_sync")
-    price_sync = database.meta_get("last_price_sync")
-    st.caption(f"Inventory: **{inv_sync or 'never'}**")
-    st.caption(f"Prices: **{price_sync or 'never'}**")
-
-# ── Page ──────────────────────────────────────────────────────────────────────
+# ── Page ───────────────────────────────────────────────────────────────────────
 
 st.title("✏️ Transactions")
 
-tab_manual, tab_bulk = st.tabs(["➕ Add Single", "📥 Bulk Import"])
+tab_manual, tab_sell, tab_bulk = st.tabs(["➕ Add Buy", "💸 Sell from Inventory", "📥 Bulk Import"])
+
 
 # ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — Add single buy transaction
+# ══════════════════════════════════════════════════════════════════════════════
 with tab_manual:
-    st.subheader("Add transaction")
+    st.subheader("Add buy transaction")
 
-    # ── Currency selector (page-level, persists across entries) ──────────────
-    curr_col, _ = st.columns([2, 4])
-    with curr_col:
-        selected_currency_label = st.selectbox(
-            "Input currency",
-            list(CURRENCIES.keys()),
-            index=list(CURRENCIES.keys()).index(st.session_state.tx_currency),
-            help="All prices will be converted to USD at the exchange rate on the transaction date.",
-            key="currency_selector",
+    mode_col, curr_col, _ = st.columns([2, 2, 2])
+    with mode_col:
+        price_mode = st.radio(
+            "Price mode",
+            ["Currency", "⭐ Armory Stars"],
+            horizontal=True,
+            help="Use Armory Stars for items from the CS2 Armory Pass (40 stars = $15.99)",
         )
-        st.session_state.tx_currency = selected_currency_label
-        input_currency = CURRENCIES[selected_currency_label]
+    use_stars = (price_mode == "⭐ Armory Stars")
 
-    if input_currency != "USD":
-        today_rate = get_rate_on_date(input_currency, "USD")
-        if today_rate:
-            st.caption(f"Today's rate: 1 {input_currency} = ${today_rate:.4f} USD")
+    if not use_stars:
+        with curr_col:
+            selected_currency_label = st.selectbox(
+                "Input currency",
+                list(CURRENCIES.keys()),
+                index=list(CURRENCIES.keys()).index(st.session_state.tx_currency),
+                key="currency_selector",
+            )
+            st.session_state.tx_currency = selected_currency_label
+            input_currency = CURRENCIES[selected_currency_label]
+        if input_currency != "USD":
+            today_rate = get_rate_on_date(input_currency, "USD")
+            if today_rate:
+                st.caption(f"Today's rate: 1 {input_currency} = ${today_rate:.4f} USD")
+    else:
+        input_currency = "USD"
 
     st.divider()
 
-    # ── Step 1: Search ────────────────────────────────────────────────────────
+    # ── Step 1: Search ─────────────────────────────────────────────────────────
     st.markdown("##### 🔍 Step 1 — Find the item")
-
     search_col, btn_col = st.columns([5, 1])
     with search_col:
         query = st.text_input(
@@ -218,15 +212,15 @@ with tab_manual:
             st.success(f"✅ **{st.session_state.tx_item_name}**")
         with c_clear:
             if st.button("Clear", key="clear_item"):
-                st.session_state.tx_item_name  = ""
-                st.session_state.tx_item_type  = "Skin"
-                st.session_state.tx_wear       = ""
-                st.session_state.tx_category   = "Normal"
+                st.session_state.tx_item_name      = ""
+                st.session_state.tx_item_type      = "Skin"
+                st.session_state.tx_wear           = ""
+                st.session_state.tx_category       = "Normal"
                 st.rerun()
 
     st.divider()
 
-    # ── Step 2: Form ──────────────────────────────────────────────────────────
+    # ── Step 2: Form ───────────────────────────────────────────────────────────
     st.markdown("##### 📝 Step 2 — Fill in details")
 
     with st.form("manual_f", clear_on_submit=False):
@@ -234,14 +228,12 @@ with tab_manual:
 
         with c1:
             tx_date = st.date_input("Date")
-
             item_name_input = st.text_input(
                 "Market Hash Name",
                 value=st.session_state.tx_item_name,
                 placeholder="AK-47 | Redline (Field-Tested)",
                 help="Auto-filled by search above, or type manually",
             )
-
             type_index = ITEM_TYPE_OPTS.index(st.session_state.tx_item_type) \
                          if st.session_state.tx_item_type in ITEM_TYPE_OPTS else 0
             itype = st.selectbox("Type", ITEM_TYPE_OPTS, index=type_index)
@@ -249,31 +241,36 @@ with tab_manual:
         with c2:
             cat_index = list(CAT_MAP.keys()).index(st.session_state.tx_category) \
                         if st.session_state.tx_category in CAT_MAP else 0
-            cat = st.selectbox("Category", list(CAT_MAP.keys()), index=cat_index)
-
+            cat  = st.selectbox("Category", list(CAT_MAP.keys()), index=cat_index)
             wear_index = WEAR_OPTS.index(st.session_state.tx_wear) \
                          if st.session_state.tx_wear in WEAR_OPTS else 0
             wear = st.selectbox("Wear", WEAR_OPTS, index=wear_index,
                                 help="Auto-filled for Skins; ignored for other types")
-
             action = st.selectbox("Action", ["Buy", "Sell"])
 
         with c3:
             qty = st.number_input("Quantity", min_value=1, value=1)
 
-            currency_symbol = selected_currency_label.split("(")[1].rstrip(")")
-            price_input = st.number_input(
-                f"Price ({currency_symbol})",
-                min_value=0.0, format="%.2f",
-                help=f"Enter price in {input_currency}. Will be converted to USD at the rate on the transaction date.",
-            )
+            if use_stars:
+                stars_input = st.number_input(
+                    "⭐ Stars paid", min_value=0.0, value=0.0,
+                    step=1.0, format="%.0f",
+                    help="Number of Armory Stars spent. Auto-converted to USD.",
+                )
+                price_input  = 0.0
+            else:
+                stars_input = 0.0
+                currency_symbol = selected_currency_label.split("(")[1].rstrip(")")
+                price_input = st.number_input(
+                    f"Price ({currency_symbol})",
+                    min_value=0.0, format="%.2f",
+                    help=f"Enter in {input_currency}. Converted to USD at transaction-date rate.",
+                )
 
             if itype == "Skin":
                 float_str = st.text_input(
-                    "Float",
-                    value="",
-                    placeholder="0.14500388503074646",
-                    help="Full precision float value (leave empty if unknown)",
+                    "Float", value="", placeholder="0.14500388503074646",
+                    help="Full precision float (leave empty if unknown)",
                 )
             else:
                 float_str = ""
@@ -283,8 +280,8 @@ with tab_manual:
             if itype in ("Skin", "Charm"):
                 seed_label = "Pattern (paint seed)" if itype == "Skin" else "Keychain pattern"
                 paint_seed = st.number_input(seed_label, min_value=0,
-                                              max_value=100000, value=0,
-                                              help="0 = unknown / not applicable")
+                                             max_value=100000, value=0,
+                                             help="0 = unknown / not applicable")
             else:
                 paint_seed = 0
                 st.number_input("Pattern", value=0, disabled=True,
@@ -293,7 +290,6 @@ with tab_manual:
         submitted = st.form_submit_button("💾 Save transaction",
                                           use_container_width=True, type="primary")
 
-    # ── Save ──────────────────────────────────────────────────────────────────
     if submitted:
         final_name = item_name_input.strip()
         if not final_name:
@@ -302,7 +298,6 @@ with tab_manual:
             if itype == "Skin" and wear and f"({wear})" not in final_name:
                 final_name = f"{final_name} ({wear})"
 
-            # Parse float
             float_val = None
             if itype == "Skin" and float_str.strip():
                 try:
@@ -314,22 +309,25 @@ with tab_manual:
                     st.error(f"Invalid float value: '{float_str}'")
                     st.stop()
 
-            # Convert price to USD
-            date_str  = str(tx_date)
-            price_usd = convert_to_usd(price_input, input_currency, date_str)
-
-            # Show conversion info if not USD
-            if input_currency != "USD" and price_input > 0:
-                rate = get_rate_on_date(input_currency, "USD", date_str)
-                if rate:
-                    st.info(
-                        f"💱 {price_input:.2f} {input_currency} "
-                        f"× {rate:.4f} = **${price_usd:.2f} USD** "
-                        f"(ECB rate on {date_str})"
-                    )
+            date_str = str(tx_date)
+            if use_stars:
+                price_usd = round(stars_input * STAR_TO_USD, 2)
+                st.info(
+                    f"⭐ {stars_input:.0f} stars "
+                    f"× ${STAR_TO_USD:.4f} = **${price_usd:.2f} USD**"
+                )
+            else:
+                price_usd = convert_to_usd(price_input, input_currency, date_str)
+                if input_currency != "USD" and price_input > 0:
+                    rate = get_rate_on_date(input_currency, "USD", date_str)
+                    if rate:
+                        st.info(
+                            f"💱 {price_input:.2f} {input_currency} "
+                            f"× {rate:.4f} = **${price_usd:.2f} USD**"
+                        )
 
             qty_signed = qty if action == "Buy" else -qty
-            new_row = {
+            _append_row({
                 "Date":       date_str,
                 "Item_Name":  final_name,
                 "Item_Type":  itype,
@@ -339,64 +337,203 @@ with tab_manual:
                 "Action":     action,
                 "Quantity":   qty_signed,
                 "Price_USD":  price_usd,
-            }
-
-            if os.path.exists(MANUAL_CSV):
-                existing = pd.read_csv(MANUAL_CSV)
-                updated  = pd.concat([existing, pd.DataFrame([new_row])], ignore_index=True)
-            else:
-                updated = pd.DataFrame([new_row])
-
-            os.makedirs("data", exist_ok=True)
-            updated.to_csv(MANUAL_CSV, index=False)
+            })
             st.cache_data.clear()
-
             st.session_state.tx_item_name      = ""
             st.session_state.tx_item_type      = "Skin"
             st.session_state.tx_wear           = ""
             st.session_state.tx_category       = "Normal"
             st.session_state.tx_search_results = []
-
             st.success(f"✅ Saved: **{final_name}** × {qty} @ ${price_usd:.2f} USD")
-            st.info("Run **📦 Sync Inventory** to update the portfolio.", icon="ℹ️")
+            st.info("Run **📦 Sync Inventory** in the sidebar to update the portfolio.", icon="ℹ️")
             st.rerun()
 
     with st.expander("💡 How it works"):
-        st.markdown("""
-**Search** queries the Steam Market API and returns exact item names including wear,
-knife star prefix (★), and StatTrak™. Selecting a result auto-fills Name, Type and Wear.
+        st.markdown(f"""
+**Search** queries the Steam Market API and auto-fills name, type and wear.
 
-Examples of what gets filled in:
-- `smoking kills` → `MP7 | Smoking Kills (Minimal Wear)` · Type: Skin · Wear: Minimal Wear
-- `karambit fade fn` → `★ Karambit | Fade (Factory New)` · Type: Skin
-- `operation bravo` → `Operation Bravo Case` · Type: Container
-- `charm semi` → `Charm | Semi-Precious` · Type: Charm
+**Armory Stars** — switch price mode to ⭐ and enter stars paid. Rate is fixed at 40 stars = $15.99 (approx. $0.3998 per star).
 
-**Currency conversion** — select your input currency at the top of the page.
-The price is converted to USD using the ECB exchange rate for the transaction date
-(sourced from [Frankfurter API](https://frankfurter.dev), no API key required).
+**Currency** — converted to USD via ECB rates on the transaction date
+([Frankfurter API](https://frankfurter.dev), no API key needed).
 
-**Float** — enter full precision from CSFloat, e.g. `0.14500388503074646` (Skin only).
-**Pattern** — paint seed (0–1000) for Skin, keychain pattern for Charm (visible on CSFloat item page).
+**Float** — full precision from CSFloat, e.g. `0.14500388503074646` (Skin only).
+**Pattern** — paint seed 0–1000 for Skin, keychain pattern for Charm.
         """)
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — Sell from inventory
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_sell:
+    st.subheader("Sell item from inventory")
+    st.caption(
+        "Select an item from your current inventory — float, pattern and type "
+        "are pre-filled automatically. Just enter the sell price and date."
+    )
+
+    inv_df = database.get_active_inventory_df()
+
+    if inv_df.empty:
+        st.info("No active inventory found. Run **📦 Sync Inventory** first.")
+    else:
+        # Build readable label per row
+        def _inv_label(row) -> str:
+            label = row["item_name"]
+            extras = []
+            if pd.notna(row.get("float_val")):
+                extras.append(f"float {float(row['float_val']):.4f}")
+            if pd.notna(row.get("paint_seed")):
+                extras.append(f"#{int(row['paint_seed'])}")
+            if int(row.get("quantity", 1)) > 1:
+                extras.append(f"×{int(row['quantity'])}")
+            return f"{label}  ({', '.join(extras)})" if extras else label
+
+        inv_df["_label"] = inv_df.apply(_inv_label, axis=1)
+        label_to_idx     = {row["_label"]: i for i, row in inv_df.iterrows()}
+
+        # Optional search filter
+        sell_search = st.text_input(
+            "🔍 Filter inventory", placeholder="AK-47, Karambit…",
+            key="sell_search", label_visibility="collapsed"
+        )
+        filtered_labels = [
+            lbl for lbl in label_to_idx
+            if not sell_search or sell_search.lower() in lbl.lower()
+        ]
+
+        if not filtered_labels:
+            st.warning("No items match that search.")
+        else:
+            sel_label = st.selectbox(
+                "Select item to sell", filtered_labels, key="sell_item_select"
+            )
+            sel_row = inv_df.loc[label_to_idx[sel_label]]
+
+            # Pre-filled read-only details
+            d1, d2, d3, d4, d5 = st.columns(5)
+            d1.markdown(f"**Type**  \n{sel_row['item_type']}")
+            d2.markdown(f"**Wear**  \n{sel_row.get('wear') or '—'}")
+            fv = sel_row.get("float_val")
+            d3.markdown(f"**Float**  \n{float(fv):.4f}" if pd.notna(fv) else "**Float**  \n—")
+            ps = sel_row.get("paint_seed")
+            d4.markdown(f"**Pattern**  \n{int(ps)}" if pd.notna(ps) else "**Pattern**  \n—")
+            avg = sel_row.get("avg_cost", 0.0)
+            d5.markdown(f"**Avg cost**  \n${float(avg):.2f}" if avg else "**Avg cost**  \n—")
+
+            st.divider()
+
+            # Sell form
+            with st.form("sell_form", clear_on_submit=True):
+                s1, s2, s3 = st.columns(3)
+
+                with s1:
+                    sell_date = st.date_input("Sell date", key="sell_date_input")
+                    sell_qty  = st.number_input(
+                        "Quantity to sell",
+                        min_value=1,
+                        max_value=max(1, int(sel_row.get("quantity", 1))),
+                        value=1,
+                        key="sell_qty_input",
+                    )
+
+                with s2:
+                    sell_mode = st.radio(
+                        "Price mode", ["Currency", "⭐ Armory Stars"],
+                        horizontal=True, key="sell_price_mode",
+                    )
+                    if sell_mode == "Currency":
+                        sell_curr_label = st.selectbox(
+                            "Currency", list(CURRENCIES.keys()), key="sell_curr"
+                        )
+                        sell_currency = CURRENCIES[sell_curr_label]
+                    else:
+                        sell_currency = "USD"
+
+                with s3:
+                    if sell_mode == "⭐ Armory Stars":
+                        sell_stars = st.number_input(
+                            "⭐ Stars received", min_value=0.0, value=0.0,
+                            step=1.0, format="%.0f", key="sell_stars_input",
+                        )
+                        sell_price_input = 0.0
+                        st.caption(f"= ${sell_stars * STAR_TO_USD:.2f} USD")
+                    else:
+                        sell_stars = 0.0
+                        sym = sell_curr_label.split("(")[1].rstrip(")")
+                        sell_price_input = st.number_input(
+                            f"Sell price ({sym})", min_value=0.0,
+                            format="%.2f", key="sell_price_input",
+                        )
+
+                sell_submitted = st.form_submit_button(
+                    "💾 Record sell", use_container_width=True, type="primary"
+                )
+
+            if sell_submitted:
+                sell_date_str = str(sell_date)
+                if sell_mode == "⭐ Armory Stars":
+                    sell_price_usd = round(sell_stars * STAR_TO_USD, 2)
+                    st.info(
+                        f"⭐ {sell_stars:.0f} stars "
+                        f"× ${STAR_TO_USD:.4f} = **${sell_price_usd:.2f} USD**"
+                    )
+                else:
+                    sell_price_usd = convert_to_usd(
+                        sell_price_input, sell_currency, sell_date_str
+                    )
+                    if sell_currency != "USD" and sell_price_input > 0:
+                        rate = get_rate_on_date(sell_currency, "USD", sell_date_str)
+                        if rate:
+                            st.info(
+                                f"💱 {sell_price_input:.2f} {sell_currency} "
+                                f"× {rate:.4f} = **${sell_price_usd:.2f} USD**"
+                            )
+
+                fv_save = sel_row.get("float_val")
+                ps_save = sel_row.get("paint_seed")
+                _append_row({
+                    "Date":       sell_date_str,
+                    "Item_Name":  sel_row["item_name"],
+                    "Item_Type":  sel_row["item_type"],
+                    "Category":   int(sel_row.get("category", 1)),
+                    "Float":      float(fv_save) if pd.notna(fv_save) else None,
+                    "Paint_Seed": int(ps_save)   if pd.notna(ps_save) else None,
+                    "Action":     "Sell",
+                    "Quantity":   -int(sell_qty),
+                    "Price_USD":  sell_price_usd,
+                })
+                st.cache_data.clear()
+                st.success(
+                    f"✅ Sell recorded: **{sel_row['item_name']}** "
+                    f"× {sell_qty} @ ${sell_price_usd:.2f} USD"
+                )
+                st.info(
+                    "Run **📦 Sync Inventory** in the sidebar to update your portfolio.",
+                    icon="ℹ️"
+                )
+                st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Bulk import
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_bulk:
     st.subheader("Bulk import via CSV")
     st.markdown("""
-All prices in the CSV must be in **USD**. For non-USD purchases, convert manually before import.
+All prices in the CSV must be in **USD**. Convert manually before importing if needed.
 
 | Column | Example | Notes |
 |---|---|---|
 | `Date` | `2024-03-15` | required |
-| `Item_Name` | `AK-47 \| Redline (Field-Tested)` | required, exact Steam market hash name |
+| `Item_Name` | `AK-47 | Redline (Field-Tested)` | required, exact Steam market hash name |
 | `Action` | `Buy` | required — Buy or Sell |
 | `Quantity` | `1` | required, negative = sell |
 | `Price_USD` | `14.50` | required, in USD |
-| `Item_Type` | `Skin` | optional — Skin / Container / Sticker / Agent / Charm / Patch / Collectible / Music Kit |
+| `Item_Type` | `Skin` | optional |
 | `Category` | `1` | optional — 1=Normal / 2=StatTrak™ / 3=Souvenir |
 | `Float` | `0.14500388503074646` | optional, full precision, Skin only |
-| `Paint_Seed` | `664` | optional — paint seed for Skin, keychain pattern for Charm |
+| `Paint_Seed` | `664` | optional |
     """)
 
     template = pd.DataFrame(columns=[
@@ -423,15 +560,14 @@ All prices in the CSV must be in **USD**. For non-USD purchases, convert manuall
                                      ("Float", None), ("Paint_Seed", None)]:
                     if col not in df_up.columns:
                         df_up[col] = default
-
                 st.dataframe(df_up, use_container_width=True, hide_index=True)
                 if st.button("✅ Confirm import", type="primary"):
+                    os.makedirs("data", exist_ok=True)
                     if os.path.exists(MANUAL_CSV):
                         existing = pd.read_csv(MANUAL_CSV)
                         updated  = pd.concat([existing, df_up], ignore_index=True)
                     else:
                         updated = df_up
-                    os.makedirs("data", exist_ok=True)
                     updated.to_csv(MANUAL_CSV, index=False)
                     st.cache_data.clear()
                     st.success(

@@ -5,20 +5,45 @@ import os
 from PIL import Image
 import database
 import scheduler
+import processor
 
 load_dotenv()
 API_KEY = os.getenv("CSFLOAT_API_KEY")
 
-# Initialize database on first run
+# Ensure DB schema is present on every cold start before any page code runs
 database.init_db()
 
 img_icon = Image.open("assets/icon.png")
 st.set_page_config(page_title="CS2 SkInvest", layout="wide", page_icon=img_icon)
 
-# ── Hide the auto-generated sidebar nav so we can build our own in the right order ──
 st.markdown("""
 <style>
+/* Hide auto-generated sidebar nav */
 [data-testid="stSidebarNav"] { display: none !important; }
+
+/* Primary buttons: mint green with dark text — replaces default red/orange */
+.stButton > button[kind="primary"] {
+    background-color: #0a7c6e !important;
+    color: #ffffff !important;
+    border: none !important;
+}
+.stButton > button[kind="primary"]:hover {
+    background-color: #0d9e8e !important;
+    color: #ffffff !important;
+}
+.stButton > button[kind="primary"]:active {
+    background-color: #086358 !important;
+}
+
+/* Form submit buttons inherit the same style */
+.stFormSubmitButton > button {
+    background-color: #0a7c6e !important;
+    color: #ffffff !important;
+    border: none !important;
+}
+.stFormSubmitButton > button:hover {
+    background-color: #0d9e8e !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -41,76 +66,95 @@ def fetch_user_info():
 
 
 with st.sidebar:
-    # ── 1. User info (top of sidebar) ─────────────────────────────────────────
+    # ── 1. User info ──────────────────────────────────────────────────────────
     user = fetch_user_info()
     if user:
-        username = user.get("username", "—")
-        steam_id = user.get("steam_id", "")
-        # CSFloat may return the avatar URL under several possible field names
+        username   = user.get("username", "—")
+        steam_id   = user.get("steam_id", "")
         avatar_url = (
-            user.get("avatar_url") or
-            user.get("avatar")     or
-            user.get("avatarUrl")  or
-            user.get("avatarfull") or
+            user.get("avatar_url") or user.get("avatar") or
+            user.get("avatarUrl")  or user.get("avatarfull") or
             user.get("avatarmedium") or ""
         )
-
         info_col, img_col = st.columns([3, 1])
         with info_col:
             st.markdown(
                 f"<div style='padding-top:6px'>"
-                f"<span style='font-size:1rem; font-weight:600'>{username}</span><br>"
-                f"<span style='font-size:0.72rem; color:gray'>{steam_id}</span>"
+                f"<span style='font-size:1rem;font-weight:600'>{username}</span><br>"
+                f"<span style='font-size:0.72rem;color:gray'>{steam_id}</span>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
         with img_col:
             if avatar_url:
                 st.markdown(
-                    f"<div style='text-align:right; padding-top:4px'>"
-                    f"<img src='{avatar_url}' "
-                    f"style='width:46px; height:46px; border:2px solid white; "
-                    f"border-radius:4px; object-fit:cover;' />"
+                    f"<div style='text-align:right;padding-top:4px'>"
+                    f"<img src='{avatar_url}' style='width:46px;height:46px;"
+                    f"border:2px solid white;border-radius:4px;object-fit:cover;'/>"
                     f"</div>",
                     unsafe_allow_html=True,
                 )
 
     st.divider()
 
-    # ── 2. Navigation links ───────────────────────────────────────────────────
-    st.page_link("pages/portfolio.py",     label="💼  Portfolio",     use_container_width=True)
-    st.page_link("pages/charts.py",        label="📊  Charts",        use_container_width=True)
-    st.page_link("pages/transactions.py",  label="✏️  Transactions",  use_container_width=True)
-    st.page_link("pages/sync_history.py",  label="🕘  Sync History",  use_container_width=True)
+    # ── 2. Navigation ─────────────────────────────────────────────────────────
+    st.page_link("pages/portfolio.py",    label="💼  Portfolio",    use_container_width=True)
+    st.page_link("pages/charts.py",       label="📊  Charts",       use_container_width=True)
+    st.page_link("pages/transactions.py", label="✏️  Transactions", use_container_width=True)
+    st.page_link("pages/sync_history.py", label="🕘  Sync History", use_container_width=True)
 
     st.divider()
 
-    # ── 3. Auto-sync status indicator ─────────────────────────────────────────
-    task = scheduler.get_task_status()
+    # ── 3. Controls (shared across all pages — no more per-page duplication) ──
+    st.markdown("**⚙️ Controls**")
+
+    if st.button("📦 Sync Inventory", use_container_width=True,
+                 help="Fetch new trades from CSFloat and rebuild inventory"):
+        with st.spinner("Fetching trades & rebuilding inventory…"):
+            n = processor.sync_inventory()
+            st.cache_data.clear()
+            st.success(f"Done — {n} active items")
+            st.rerun()
+
+    if st.button("💰 Sync Prices", use_container_width=True,
+                 help="Fetch latest prices from CSFloat & Steam"):
+        st.switch_page("pages/sync_page.py")
+
+    st.divider()
+
+    inv_sync   = database.meta_get("last_inventory_sync")
+    price_sync = database.meta_get("last_price_sync")
+    st.caption(f"Inventory: **{inv_sync or 'never'}**")
+    st.caption(f"Prices: **{price_sync or 'never'}**")
+
+    st.divider()
+
+    # ── 4. Auto-sync status ───────────────────────────────────────────────────
+    task      = scheduler.get_task_status()
     last_auto = database.meta_get("last_auto_sync")
     if task["exists"] and task["enabled"]:
         st.markdown(
-            "<span style='color:#06d6a0; font-size:0.82rem'>🟢 Auto-Sync enabled</span>",
+            "<span style='color:#06d6a0;font-size:0.82rem'>🟢 Auto-Sync enabled</span>",
             unsafe_allow_html=True,
         )
-        st.caption(f"Last auto: **{last_auto or 'never'}**  ·  Next: **{task['next_run'] or '—'}**")
+        st.caption(
+            f"Last auto: **{last_auto or 'never'}**  \n"
+            f"Next: **{task['next_run'] or '—'}**"
+        )
     else:
         st.markdown(
-            "<span style='color:#aaa; font-size:0.82rem'>⚪ Auto-Sync off</span>",
+            "<span style='color:#aaa;font-size:0.82rem'>⚪ Auto-Sync off</span>",
             unsafe_allow_html=True,
         )
         st.caption("Set up in **🕘 Sync History**")
 
-    st.divider()
-    # ── 4. Controls section is added by each page below this point ────────────
 
-
-# ── All pages must be registered here for routing to work ────────────────────
-portfolio_page    = st.Page("pages/portfolio.py",     title="Portfolio",     icon="💼")
-charts_page       = st.Page("pages/charts.py",        title="Charts",        icon="📊")
-transactions_page = st.Page("pages/transactions.py",  title="Transactions",  icon="✏️")
-sync_page         = st.Page("pages/sync_page.py",     title="Sync Prices",   icon="💰")
-sync_history_page = st.Page("pages/sync_history.py",  title="Sync History",  icon="🕘")
+# ── Page registration ─────────────────────────────────────────────────────────
+portfolio_page    = st.Page("pages/portfolio.py",    title="Portfolio",    icon="💼")
+charts_page       = st.Page("pages/charts.py",       title="Charts",       icon="📊")
+transactions_page = st.Page("pages/transactions.py", title="Transactions", icon="✏️")
+sync_page         = st.Page("pages/sync_page.py",    title="Sync Prices",  icon="💰")
+sync_history_page = st.Page("pages/sync_history.py", title="Sync History", icon="🕘")
 
 pg = st.navigation([portfolio_page, charts_page, transactions_page,
                     sync_page, sync_history_page])

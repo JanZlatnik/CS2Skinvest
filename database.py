@@ -146,18 +146,18 @@ def get_active_inventory_df() -> pd.DataFrame:
 def migrate_db():
     """Add any missing columns/tables to existing databases (safe to run on every startup)."""
     with get_conn() as conn:
-        # price_history: add stale column if missing
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(price_history)").fetchall()}
-        if "stale" not in cols:
-            conn.execute("ALTER TABLE price_history ADD COLUMN stale INTEGER NOT NULL DEFAULT 0")
-
-        # meta: create if not present (for users upgrading from earlier versions)
+        # meta table: create if not present (required before any meta_get/set calls)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS meta (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             )
         """)
+
+        # price_history: add stale column if missing
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(price_history)").fetchall()}
+        if "stale" not in cols:
+            conn.execute("ALTER TABLE price_history ADD COLUMN stale INTEGER NOT NULL DEFAULT 0")
 
         # sync_log: create if not present (for users upgrading from earlier versions)
         conn.execute("""
@@ -403,3 +403,21 @@ def get_items_unpriced_today() -> set[str]:
             (today,),
         ).fetchall()
     return {r[0] for r in rows}
+
+
+def get_yesterday_portfolio_value() -> tuple[float, float]:
+    """
+    Return (cf_value, total_cost) from the most recent portfolio snapshot
+    that is strictly before today. Used for daily P&L delta on portfolio page.
+    Returns (0.0, 0.0) if no prior snapshot exists.
+    """
+    today = date.today().isoformat()
+    with get_conn() as conn:
+        row = conn.execute("""
+            SELECT cf_value, total_cost FROM portfolio_snapshots
+            WHERE substr(timestamp,1,10) < ?
+            ORDER BY timestamp DESC LIMIT 1
+        """, (today,)).fetchone()
+    if row:
+        return float(row[0]), float(row[1])
+    return 0.0, 0.0

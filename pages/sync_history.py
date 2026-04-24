@@ -9,21 +9,6 @@ import scheduler
 
 st.title("🕘 Sync History & Auto-Sync")
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.header("⚙️ Controls")
-    import processor
-    if st.button("📦 Sync Inventory", use_container_width=True):
-        with st.spinner("Rebuilding inventory…"):
-            n = processor.sync_inventory()
-            st.cache_data.clear()
-            st.success(f"{n} active items")
-            st.rerun()
-    if st.button("💰 Sync Prices", use_container_width=True):
-        st.switch_page("pages/sync_page.py")
-    st.divider()
-    st.caption(f"Prices: **{database.meta_get('last_price_sync') or 'never'}**")
-
 tab_history, tab_auto = st.tabs(["📋 Sync History", "⚙️ Auto-Sync Setup"])
 
 
@@ -129,9 +114,9 @@ with tab_history:
 
                 st.dataframe(
                     display,
-                    use_container_width=True,
+                    width='stretch',
                     hide_index=True,
-                    height=min(700, 60 + len(display) * 35),
+                    height=min(600, 60 + len(display) * 35),
                     column_config={
                         "Status":   st.column_config.TextColumn("Status",  width="small"),
                         "Item":     st.column_config.TextColumn("Item"),
@@ -177,7 +162,14 @@ with tab_auto:
     c1, c2, c3 = st.columns(3)
     c1.metric("Last auto-sync", last_auto or "never")
     c2.metric("Next scheduled", status["next_run"] or "—")
-    c3.metric("Scheduled time", status["run_time"] or "—")
+    raw_rt = status["run_time"] or ""
+    if raw_rt and ":" in raw_rt:
+        parts = raw_rt.split(":")
+        h_r, m_r = parts[0], parts[1]
+        formatted_rt = f"{int(h_r):02d}:{int(m_r):02d}"
+    else:
+        formatted_rt = raw_rt or "—"
+    c3.metric("Scheduled time", formatted_rt)
 
     if status["last_result"] is not None:
         code         = status["last_result"]
@@ -189,9 +181,9 @@ with tab_auto:
     # ── Configure section ─────────────────────────────────────────────────────
     st.subheader("Configure")
 
-    col_time, col_btn = st.columns([2, 3])
+    cfg_left, _ = st.columns([2, 3])
 
-    with col_time:
+    with cfg_left:
         default_hour, default_minute = 6, 0
         if status["run_time"] and ":" in status["run_time"]:
             try:
@@ -211,31 +203,27 @@ with tab_auto:
             "automatically the **next time it starts up** — no missed days."
         )
 
-    with col_btn:
-        st.markdown("&nbsp;", unsafe_allow_html=True)
 
+        # ── Action buttons (aligned under the time inputs) ─────────────
+        st.markdown("")
         if on_windows:
-            b1, b2 = st.columns(2)
-            with b1:
-                btn_label = "✅ Enable Auto-Sync" if not status["exists"] else "🔄 Update Schedule"
-                if st.button(btn_label, use_container_width=True, type="primary"):
-                    ok, msg = scheduler.create_task(run_time_str)
-                    if ok:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
-            with b2:
-                if st.button("🗑️ Remove Task", use_container_width=True,
-                             disabled=not status["exists"], type="secondary"):
-                    ok, msg = scheduler.delete_task()
-                    if ok:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
+            btn_label = "✅ Enable Auto-Sync" if not status["exists"] else "🔄 Update Schedule"
+            if st.button(btn_label, use_container_width=True, type="primary"):
+                ok, msg = scheduler.create_task(run_time_str)
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
-            st.markdown("&nbsp;", unsafe_allow_html=True)
+            if st.button("🗑️ Remove Task", use_container_width=True,
+                         disabled=not status["exists"], type="secondary"):
+                ok, msg = scheduler.delete_task()
+                if ok:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
 
             if st.button("▶ Run Now (test)", use_container_width=True,
                          disabled=not status["exists"],
@@ -244,15 +232,14 @@ with tab_auto:
                 if ok:
                     st.success(msg)
                     st.info(
-                        "Sync is running in the background.  \n"
-                        "Check the log below in ~1 minute, or open **📋 Sync History** "
-                        "to see the new run appear."
+                        "Sync running in background.  \n"
+                        "Check the log below in ~1 minute, or open **📋 Sync History**."
                     )
                 else:
                     st.error(msg)
         else:
             st.info(
-                "Buttons are disabled on non-Windows systems.  \n"
+                "Buttons disabled on non-Windows.  \n"
                 "Use a cron job to schedule `auto_sync.py` instead."
             )
 

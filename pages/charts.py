@@ -1,27 +1,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 import processor, database
 
 st.title("📊 Charts & Analytics")
-
-# ── Sidebar – Controls only (user info + nav are rendered by app.py) ──────────
-with st.sidebar:
-    st.header("⚙️ Controls")
-
-    if st.button("📦 Sync Inventory", use_container_width=True):
-        with st.spinner("Rebuilding inventory…"):
-            n = processor.sync_inventory()
-            st.cache_data.clear()
-            st.success(f"{n} active items")
-            st.rerun()
-
-    if st.button("💰 Sync Prices", use_container_width=True,
-                 help="Fetch latest prices from CSFloat & Steam"):
-        st.switch_page("pages/sync_page.py")
-
-    st.divider()
-    st.caption(f"Prices: **{database.meta_get('last_price_sync') or 'never'}**")
 
 
 @st.cache_data(ttl=120, show_spinner=False)
@@ -30,10 +13,11 @@ def load_portfolio():
 
 portfolio = load_portfolio()
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "💼 Portfolio Value",
     "📦 Item Price History",
     "💰 Profit / Loss",
+    "🥧 Distribution",
 ])
 
 CHART_HEIGHT = 520
@@ -164,3 +148,50 @@ with tab3:
         st.plotly_chart(fig3, use_container_width=True)
     else:
         st.info("No portfolio data.")
+
+# ── Tab 4 · Portfolio distribution ───────────────────────────────────────────
+with tab4:
+    if not portfolio.empty:
+        grp_df = (
+            portfolio.groupby("item_type", dropna=False)["cf_value"]
+            .sum()
+            .reset_index()
+            .rename(columns={"item_type": "Type", "cf_value": "Value"})
+        )
+        grp_df = grp_df[grp_df["Value"] > 0].copy()
+        grp_df["Type"] = grp_df["Type"].fillna("Unknown")
+
+        total_val = grp_df["Value"].sum()
+
+        left, right = st.columns([3, 2])
+        with left:
+            fig4 = px.pie(
+                grp_df, values="Value", names="Type",
+                title="Portfolio value by item type",
+                hole=0.42,
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig4.update_traces(
+                textposition="inside",
+                textinfo="percent+label",
+                hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>",
+            )
+            fig4.update_layout(
+                showlegend=True,
+                legend=dict(orientation="v", x=1.02, y=0.5),
+                margin=dict(t=40, b=10, l=10, r=10),
+                height=440,
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig4, use_container_width=True)
+
+        with right:
+            st.markdown("**Breakdown**")
+            tbl = grp_df.sort_values("Value", ascending=False).copy()
+            tbl["Share"] = (tbl["Value"] / total_val * 100).map("{:.1f}%".format)
+            tbl["Value"] = tbl["Value"].map("${:,.2f}".format)
+            st.dataframe(tbl[["Type", "Value", "Share"]],
+                         hide_index=True, use_container_width=True)
+    else:
+        st.info("No portfolio data. Run **Sync Prices** first.")
