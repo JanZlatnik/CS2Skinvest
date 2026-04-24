@@ -80,7 +80,6 @@ def _load_ledger() -> pd.DataFrame:
     # Paint_Seed must always be integer. pd.to_numeric + round handles "651.0" from CSV.
     df["Paint_Seed"] = pd.to_numeric(df["Paint_Seed"], errors="coerce").round(0).astype("Int64")
     return df
-    return df
 
 
 def _assign_item_keys(df: pd.DataFrame) -> pd.DataFrame:
@@ -101,43 +100,91 @@ def _assign_item_keys(df: pd.DataFrame) -> pd.DataFrame:
 
 def fetch_csfloat_trades() -> bool:
     """
-    Incrementally fetch new verified trades from CSFloat.
-    Stores last trade id in meta so each call only fetches new ones.
+    Fetch verified trades from CSFloat with full pagination.
+
+    First run  : pages through ALL history until exhausted (~100/page).
+    Subsequent : uses `last_trade_id` stored in meta to only fetch new trades,
+                 still paginating in case many new trades arrived at once.
+
+    CSFloat returns trades newest-first. We paginate with `page` (0-indexed)
+    and stop when a page returns fewer results than the page size (last page).
+    On incremental runs we stop as soon as we see a trade_id we already have.
+
+    Saves newest trade_id to meta after a successful full fetch so the next
+    incremental run knows where to stop.
     """
     if not API_KEY:
         return False
 
     headers       = {"Authorization": API_KEY}
     last_trade_id = database.meta_get("last_trade_id")
+    PAGE_SIZE     = 100   # CSFloat max per page
 
     try:
-        me  = requests.get(f"{BASE_URL}/me", headers=headers, timeout=10)
+        me = requests.get(f"{BASE_URL}/me", headers=headers, timeout=10)
         me.raise_for_status()
         my_id = me.json().get("user", {}).get("steam_id")
 
-        params: dict = {"limit": 500, "state": "verified"}
-        if last_trade_id:
-            params["after"] = last_trade_id
+        all_trades: list = []
+        page = 0
 
-        resp = requests.get(f"{BASE_URL}/me/trades", headers=headers,
-                            params=params, timeout=15)
-        resp.raise_for_status()
-        raw = resp.json()
-        new_trades = raw if isinstance(raw, list) else raw.get("trades", [])
+        while True:
+            params: dict = {
+                "limit": PAGE_SIZE,
+                "state": "verified",
+                "page":  page,
+            }
+            resp = requests.get(f"{BASE_URL}/me/trades", headers=headers,
+                                params=params, timeout=15)
+            resp.raise_for_status()
+            raw    = resp.json()
+            trades = raw if isinstance(raw, list) else raw.get("trades", [])
 
-        if not new_trades:
+            if not trades:
+                break   # no more pages
+
+            # On incremental runs: stop paging once we hit a known trade
+            if last_trade_id:
+                new_on_page = []
+                hit_known   = False
+                for t in trades:
+                    if str(t.get("id", "")) == last_trade_id:
+                        hit_known = True
+                        break
+                    new_on_page.append(t)
+                all_trades.extend(new_on_page)
+                if hit_known:
+                    break
+            else:
+                all_trades.extend(trades)
+
+            # If the page was not full we have reached the last page
+            if len(trades) < PAGE_SIZE:
+                break
+
+            page += 1
+            time.sleep(0.3)   # be polite between pagination requests
+
+        if not all_trades:
             return False
 
         os.makedirs("data", exist_ok=True)
         with open("data/csfloat_raw_new.json", "w", encoding="utf-8") as f:
-            json.dump({"trades": new_trades, "my_steam_id": my_id}, f)
+            json.dump({"trades": all_trades, "my_steam_id": my_id}, f)
 
-        newest_id = str(new_trades[0].get("id", ""))
+        # Save the newest trade id (first in the list — API returns newest-first)
+        newest_id = str(all_trades[0].get("id", ""))
         if newest_id:
             database.meta_set("last_trade_id", newest_id)
         return True
 
-    except Exception:
+    except requests.HTTPError as exc:
+        import logging
+        logging.getLogger(__name__).error(f"CSFloat trades fetch HTTP error: {exc}")
+        return False
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).error(f"CSFloat trades fetch error: {exc}")
         return False
 
 
@@ -283,42 +330,69 @@ def sync_inventory() -> int:
 # ── Sync Prices ───────────────────────────────────────────────────────────────
 
 
-def fetch_steam_price(item_name: str) -> float:
+def fetch_steam_price(item_name: str, delay: float = 1.5) -> float:
+    """
+    Fetch Steam market lowest price in USD (currency=1).
+    `delay` is pre-applied by the caller; this function does not sleep itself.
+    Handles both US ($1,234.56) and European (1.234,56) number formats safely.
+    """
     url    = "https://steamcommunity.com/market/priceoverview/"
     params = {"appid": 730, "currency": 1, "market_hash_name": item_name}
     try:
         r = requests.get(url, params=params, timeout=8,
                          headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 429:
-            time.sleep(3)
+            time.sleep(5)
             r = requests.get(url, params=params, timeout=8,
                              headers={"User-Agent": "Mozilla/5.0"})
         if r.status_code == 200:
             d   = r.json()
             raw = d.get("lowest_price", "") or d.get("median_price", "")
             if raw:
-                # Strip any currency symbols/formatting, keep digits and dot
-                cleaned = ""
-                for ch in raw:
-                    if ch.isdigit() or ch == ".":
-                        cleaned += ch
-                if cleaned:
-                    return round(float(cleaned), 2)
+                # Normalise: remove everything except digits, dot, comma
+                # then handle both 1,234.56 (US) and 1.234,56 (EU) formats
+                digits_only = "".join(ch for ch in raw if ch.isdigit() or ch in ".,")
+                if not digits_only:
+                    return 0.0
+                # If last separator is comma → EU format: swap . and ,
+                if digits_only and digits_only[-3] == "," if len(digits_only) >= 3 else False:
+                    digits_only = digits_only.replace(".", "").replace(",", ".")
+                else:
+                    digits_only = digits_only.replace(",", "")
+                return round(float(digits_only), 2)
     except Exception:
         pass
     return 0.0
 
 
-def sync_prices(progress_cb=None) -> pd.DataFrame:
+def sync_prices(
+    progress_cb=None,
+    trigger: str = "manual",
+    retry_unpriced: bool = False,
+    cf_delay: float = 0.35,
+    steam_delay: float = 1.5,
+) -> pd.DataFrame:
     """
     Fetch current CF + Steam prices for active inventory items.
-    Skips items that already have a price snapshot for today.
 
-    progress_cb: optional callable(pct: float, msg: str, log_line: str | None)
-                 pct      — 0.0–1.0
-                 msg      — current item being fetched (shown in progress bar)
-                 log_line — single new log line to append to rolling display (or None)
+    Interleaved mode: fetch CSFloat then Steam for each item before moving to
+    the next. This spreads the load evenly and avoids hammering one API
+    continuously for large inventories.
+
+    Parameters
+    ----------
+    progress_cb     : optional callable(pct, msg, log_line | None)
+    trigger         : "manual" | "auto" — recorded in sync_log
+    retry_unpriced  : if True, also re-fetch items that already have a
+                      price_history row today but with cf_price == 0 (no_price)
+                      OR stale == 1. Allows a second pass to catch items the
+                      first run missed due to rate limiting.
+    cf_delay        : seconds to sleep after each CSFloat call (default 0.35s
+                      for manual; auto_sync passes a higher value e.g. 1.5s)
+    steam_delay     : seconds to sleep after each Steam call
     """
+    import uuid
+
     def _progress(pct: float, msg: str, log_line: str | None = None):
         if progress_cb:
             progress_cb(pct, msg, log_line)
@@ -328,61 +402,80 @@ def sync_prices(progress_cb=None) -> pd.DataFrame:
         return inv
 
     already_priced = database.get_items_with_todays_price()
-    inv_todo = inv[~inv["item_key"].isin(already_priced)]
+
+    if retry_unpriced:
+        # Include items that were attempted today but returned no price or stale
+        unpriced_today = database.get_items_unpriced_today()
+        skip_keys      = already_priced - unpriced_today   # priced OK → skip
+        inv_todo       = inv[~inv["item_key"].isin(skip_keys)]
+    else:
+        inv_todo = inv[~inv["item_key"].isin(already_priced)]
 
     if inv_todo.empty:
         _progress(1.0, "✅ All items already priced today — nothing to fetch.")
         return build_portfolio_from_db()
 
-    total = len(inv_todo)
-    ts    = datetime.now().strftime("%Y-%m-%d %H:%M")   # local time, matches date.today()
+    total  = len(inv_todo)
+    ts     = datetime.now().strftime("%Y-%m-%d %H:%M")
+    run_id = uuid.uuid4().hex[:12]
 
-    cf_results:    dict[str, tuple[float, bool]] = {}
-    steam_prices:  dict[str, float]              = {}
+    # Track which steam names we've already fetched this run (dedup across
+    # multiple rows with the same item_name, e.g. same skin different floats)
+    steam_cache: dict[str, float] = {}
+    log_rows:    list[dict]       = []
 
-    # ── CSFloat prices ────────────────────────────────────────────────────────
+    # ── Interleaved CSFloat + Steam per item ──────────────────────────────────
     for idx, (_, row) in enumerate(inv_todo.iterrows()):
-        name = row["item_name"]
-        pct  = idx / (total * 2)
-        _progress(pct, f"📦 CSFloat ({idx + 1}/{total}): {name}", None)
+        name    = row["item_name"]
+        key     = row["item_key"]
+        pct     = idx / total
+        count   = idx + 1
 
-        price, stale, method = csf_pricer.fetch_cf_price(row.to_dict())
-        cf_results[row["item_key"]] = (price, stale)
+        # — CSFloat —
+        _progress(pct, f"📦 ({count}/{total}) CSFloat: {name}", None)
+        cf_price, stale, method = csf_pricer.fetch_cf_price(row.to_dict())
 
-        # Emit one structured log line for the sync page display
-        if price > 0:
-            log_line = f"✅ {name}: {method} → ${price:.2f}"
+        if cf_price > 0 and not stale:
+            cf_log = f"✅ {name}: {method} → ${cf_price:.2f}"
         elif stale:
-            log_line = f"⚠️ {name}: stale → ${price:.2f}"
+            cf_log = f"⚠️ {name}: stale → ${cf_price:.2f}"
         else:
-            log_line = f"🔴 {name}: no price found"
-        _progress(pct, f"📦 CSFloat ({idx + 1}/{total}): {name}", log_line)
-        time.sleep(0.35)
+            cf_log = f"🔴 {name}: no CSFloat price"
+        _progress(pct, f"📦 ({count}/{total}) CSFloat: {name}", cf_log)
+        time.sleep(cf_delay)
 
-    # ── Steam prices ──────────────────────────────────────────────────────────
-    unique_names = inv_todo["item_name"].unique()
-    n_steam      = len(unique_names)
-    for idx, name in enumerate(unique_names):
-        pct = 0.5 + idx / (n_steam * 2)
-        _progress(pct, f"🌐 Steam ({idx + 1}/{n_steam}): {name}",
-                  f"🌐 Steam ({idx + 1}/{n_steam}): {name}")
-        steam_prices[name] = fetch_steam_price(name)
-        result_line = f"   → ${steam_prices[name]:.2f}" if steam_prices[name] else "   → no price"
-        _progress(pct, f"🌐 Steam ({idx + 1}/{n_steam}): {name}", result_line)
-        time.sleep(1.5)
+        # — Steam (skip if already fetched for this name in this run) —
+        if name not in steam_cache:
+            _progress(pct, f"🌐 ({count}/{total}) Steam: {name}", None)
+            st_price = fetch_steam_price(name)
+            steam_cache[name] = st_price
+            st_log = f"   🌐 Steam → ${st_price:.2f}" if st_price else "   🌐 Steam → no price"
+            _progress(pct, f"🌐 ({count}/{total}) Steam: {name}", st_log)
+            time.sleep(steam_delay)
+        else:
+            st_price = steam_cache[name]
 
-    _progress(0.95, "💾 Saving snapshots…", "💾 Saving snapshots…")
-
-    # Save per-item snapshots
-    for _, row in inv_todo.iterrows():
-        key             = row["item_key"]
-        cf_price, stale = cf_results.get(key, (0.0, False))
-        st_price        = steam_prices.get(row["item_name"], 0.0)
+        # — Save snapshot immediately (don't wait until the end) —
         if cf_price > 0 or st_price > 0:
             database.save_price_snapshot(key, cf_price, st_price, ts, stale=stale)
 
-    portfolio = build_portfolio_from_db()
+        log_rows.append({
+            "run_id":      run_id,
+            "timestamp":   ts,
+            "item_key":    key,
+            "item_name":   name,
+            "item_type":   row.get("item_type", ""),
+            "cf_price":    cf_price,
+            "steam_price": st_price,
+            "method":      method,
+            "stale":       int(stale),
+            "trigger":     trigger,
+        })
 
+    _progress(0.98, "💾 Saving sync log…", "💾 Saving sync log…")
+    database.save_sync_log_rows(log_rows)
+
+    portfolio = build_portfolio_from_db()
     database.save_portfolio_snapshot(
         cf_value=portfolio["cf_value"].sum(),
         steam_value=portfolio["steam_value"].sum(),
@@ -390,13 +483,17 @@ def sync_prices(progress_cb=None) -> pd.DataFrame:
         timestamp=ts,
     )
 
-    database.meta_set("last_price_sync",
-                      datetime.now().strftime("%Y-%m-%d %H:%M"))
+    database.meta_set("last_price_sync", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    if trigger == "auto":
+        database.meta_set("last_auto_sync", datetime.now().strftime("%Y-%m-%d %H:%M"))
     database.compress_old_price_history()
     database.compress_old_portfolio_snapshots()
 
-    skipped = len(inv) - len(inv_todo)
-    done_msg = f"✅ Done! Fetched {len(inv_todo)} items, skipped {skipped} (already priced today)."
+    skipped  = len(inv) - len(inv_todo)
+    ok_n     = sum(1 for r in log_rows if r["cf_price"] > 0 and not r["stale"])
+    miss_n   = sum(1 for r in log_rows if r["cf_price"] == 0)
+    done_msg = (f"✅ Done! {ok_n} priced, {miss_n} missing, "
+                f"{skipped} skipped (already priced today).")
     _progress(1.0, done_msg, done_msg)
 
     return portfolio

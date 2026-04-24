@@ -69,8 +69,26 @@ def init_db():
                 value TEXT NOT NULL
             )
         """)
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_key ON price_history(item_key)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_ts  ON price_history(timestamp)")
+        # ── Sync log: one row per item per sync run ────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id      TEXT NOT NULL,
+                timestamp   TEXT NOT NULL,
+                item_key    TEXT NOT NULL,
+                item_name   TEXT NOT NULL,
+                item_type   TEXT NOT NULL DEFAULT '',
+                cf_price    REAL NOT NULL DEFAULT 0,
+                steam_price REAL NOT NULL DEFAULT 0,
+                method      TEXT NOT NULL DEFAULT '',
+                stale       INTEGER NOT NULL DEFAULT 0,
+                trigger     TEXT NOT NULL DEFAULT 'manual'
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_key   ON price_history(item_key)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ph_ts    ON price_history(timestamp)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sl_runid ON sync_log(run_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sl_ts    ON sync_log(timestamp)")
     migrate_db()
 
 
@@ -126,11 +144,31 @@ def get_active_inventory_df() -> pd.DataFrame:
 # ── Price history ─────────────────────────────────────────────────────────────
 
 def migrate_db():
-    """Add any missing columns to existing databases (safe to run on every startup)."""
+    """Add any missing columns/tables to existing databases (safe to run on every startup)."""
     with get_conn() as conn:
+        # price_history: add stale column if missing
         cols = {r[1] for r in conn.execute("PRAGMA table_info(price_history)").fetchall()}
         if "stale" not in cols:
             conn.execute("ALTER TABLE price_history ADD COLUMN stale INTEGER NOT NULL DEFAULT 0")
+
+        # sync_log: create if not present (for users upgrading from earlier versions)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS sync_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id      TEXT NOT NULL,
+                timestamp   TEXT NOT NULL,
+                item_key    TEXT NOT NULL,
+                item_name   TEXT NOT NULL,
+                item_type   TEXT NOT NULL DEFAULT '',
+                cf_price    REAL NOT NULL DEFAULT 0,
+                steam_price REAL NOT NULL DEFAULT 0,
+                method      TEXT NOT NULL DEFAULT '',
+                stale       INTEGER NOT NULL DEFAULT 0,
+                trigger     TEXT NOT NULL DEFAULT 'manual'
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sl_runid ON sync_log(run_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_sl_ts    ON sync_log(timestamp)")
 
 
 def save_price_snapshot(item_key: str, cf_price: float, steam_price: float,
@@ -280,3 +318,80 @@ def meta_get(key: str) -> str | None:
     with get_conn() as conn:
         row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     return row[0] if row else None
+
+# ── Sync log ──────────────────────────────────────────────────────────────────
+
+def save_sync_log_rows(rows: list[dict]):
+    """
+    Persist one sync run's item results to sync_log.
+    Each dict must have: run_id, timestamp, item_key, item_name, item_type,
+                         cf_price, steam_price, method, stale, trigger
+    """
+    if not rows:
+        return
+    with get_conn() as conn:
+        conn.executemany("""
+            INSERT INTO sync_log
+                (run_id, timestamp, item_key, item_name, item_type,
+                 cf_price, steam_price, method, stale, trigger)
+            VALUES
+                (:run_id, :timestamp, :item_key, :item_name, :item_type,
+                 :cf_price, :steam_price, :method, :stale, :trigger)
+        """, rows)
+
+
+def get_sync_run_dates() -> list[str]:
+    """Return distinct sync run dates (YYYY-MM-DD), newest first."""
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT DISTINCT substr(timestamp, 1, 10) as day
+            FROM sync_log
+            ORDER BY day DESC
+        """).fetchall()
+    return [r[0] for r in rows]
+
+
+def get_sync_runs_for_date(day: str) -> list[dict]:
+    """
+    Return list of {run_id, timestamp, trigger, item_count} for a given date.
+    """
+    with get_conn() as conn:
+        rows = conn.execute("""
+            SELECT run_id,
+                   MIN(timestamp) as timestamp,
+                   MAX(trigger)   as trigger,
+                   COUNT(*)       as item_count
+            FROM sync_log
+            WHERE substr(timestamp, 1, 10) = ?
+            GROUP BY run_id
+            ORDER BY timestamp DESC
+        """, (day,)).fetchall()
+    return [{"run_id": r[0], "timestamp": r[1],
+             "trigger": r[2], "item_count": r[3]} for r in rows]
+
+
+def get_sync_log_for_run(run_id: str) -> pd.DataFrame:
+    """Return all item rows for a specific sync run."""
+    with get_conn() as conn:
+        return pd.read_sql_query("""
+            SELECT item_name, item_type, method, cf_price, steam_price, stale
+            FROM sync_log
+            WHERE run_id = ?
+            ORDER BY item_name
+        """, conn, params=(run_id,))
+
+
+def get_items_unpriced_today() -> set[str]:
+    """
+    Return set of item_keys that have a price_history row for today BUT
+    either cf_price == 0 (no price found) or stale == 1 (carried forward).
+    Used by retry_unpriced mode in sync_prices.
+    """
+    today = date.today().isoformat()
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT item_key FROM price_history "
+            "WHERE substr(timestamp,1,10) = ? AND (cf_price = 0 OR stale = 1)",
+            (today,),
+        ).fetchall()
+    return {r[0] for r in rows}

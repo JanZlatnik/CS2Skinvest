@@ -1,58 +1,15 @@
 """
 sync_page.py  —  Dedicated price sync page with full-width live log.
+Delegates all fetching to processor.sync_prices() so logic is never duplicated.
 """
 import streamlit as st
 import pandas as pd
-import time
-import processor, database
+import threading
+import queue
+import processor
+import database
 
 st.title("💰 Sync Prices")
-
-# ── Status info ───────────────────────────────────────────────────────────────
-last_sync = database.meta_get("last_price_sync")
-col_info, col_btn = st.columns([3, 1])
-with col_info:
-    if last_sync:
-        st.caption(f"Last sync: **{last_sync}**")
-    else:
-        st.caption("No sync yet.")
-with col_btn:
-    start = st.button("▶ Start Sync", type="primary", use_container_width=True)
-
-st.divider()
-
-if not start:
-    inv = database.get_active_inventory_df()
-    already = database.get_items_with_todays_price()
-    todo    = inv[~inv["item_key"].isin(already)] if not inv.empty else pd.DataFrame()
-
-    if inv.empty:
-        st.info("No inventory found. Run **Sync Inventory** first.")
-    else:
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total items", len(inv))
-        c2.metric("Already priced today", len(already))
-        c3.metric("To fetch", len(todo))
-        if todo.empty:
-            st.success("✅ All items already have today's prices. Nothing to fetch.")
-        else:
-            st.info(f"Click **▶ Start Sync** to fetch prices for {len(todo)} items.")
-    st.stop()
-
-# ── Live sync ─────────────────────────────────────────────────────────────────
-
-# Current item display (above progress bar)
-current_item_display = st.empty()
-
-# Progress bar
-progress_bar = st.progress(0.0, text="Starting…")
-
-st.divider()
-
-log_area = st.empty()   # dataframe renders here, updated after each item
-
-# ── State for the log table ───────────────────────────────────────────────────
-log_rows: list[dict] = []   # {name, method, cf_price, steam_price, stale}
 
 METHOD_LABELS = {
     "basic":      "🔍 Basic",
@@ -61,147 +18,187 @@ METHOD_LABELS = {
     "seed_float": "🎨📐 Seed + float",
     "stale":      "⚠️ Last known",
     "no_price":   "🔴 Not found",
-    "steam_avg":  "🌐 Steam",
 }
+
+# ── Status / pre-flight ───────────────────────────────────────────────────────
+last_sync = database.meta_get("last_price_sync")
+st.caption(f"Last sync: **{last_sync}**" if last_sync else "No sync yet.")
+
+inv     = database.get_active_inventory_df()
+already = database.get_items_with_todays_price()
+unpriced_today = database.get_items_unpriced_today()
+todo    = inv[~inv["item_key"].isin(already)] if not inv.empty else pd.DataFrame()
+retry_candidates = inv[inv["item_key"].isin(unpriced_today)] if not inv.empty else pd.DataFrame()
+
+if inv.empty:
+    st.info("No inventory found. Run **Sync Inventory** first.")
+    st.stop()
+
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Total items",          len(inv))
+c2.metric("Already priced today", len(already) - len(unpriced_today))
+c3.metric("To fetch",             len(todo))
+c4.metric("⚠️ Retry candidates",  len(retry_candidates),
+          help="Items fetched today but with no price found or stale — eligible for retry")
+
+st.divider()
+
+# ── Action buttons ────────────────────────────────────────────────────────────
+b1, b2 = st.columns(2)
+with b1:
+    start_full  = st.button(
+        "▶ Sync Prices",
+        type="primary",
+        use_container_width=True,
+        disabled=todo.empty,
+        help="Fetch prices for all items not yet priced today",
+    )
+with b2:
+    start_retry = st.button(
+        "🔄 Retry Unpriced",
+        use_container_width=True,
+        disabled=retry_candidates.empty,
+        help="Re-fetch only items that had no price or stale price in today's sync",
+    )
+
+if not start_full and not start_retry:
+    if todo.empty and retry_candidates.empty:
+        st.success("✅ All items have fresh prices today. Nothing to do.")
+    st.stop()
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Live sync — processor.sync_prices streams progress via callback
+# ══════════════════════════════════════════════════════════════════════════════
+
+is_retry = start_retry and not start_full
+
+current_item_display = st.empty()
+progress_bar         = st.progress(0.0, text="Starting…")
+st.divider()
+log_area  = st.empty()
+log_rows: list[dict] = []   # {status, name, method, cf_price, steam_price}
 
 
 def _render_log():
-    """Re-render the log table — newest entry at the top."""
     if not log_rows:
         return
     rows = []
-    for r in reversed(log_rows):          # ← newest first
-        cf_str = (f"⚠️ ${r['cf_price']:.2f}" if r.get("stale") else
-                  (f"${r['cf_price']:.2f}" if r["cf_price"] > 0 else "🔴 N/A"))
-        st_str = f"${r['steam_price']:.2f}" if r["steam_price"] > 0 else "—"
+    for r in reversed(log_rows):
         rows.append({
+            "Status":   r["status"],
             "Item":     r["name"],
-            "Method":   METHOD_LABELS.get(r["method"], r["method"]),
-            "CF Price": cf_str,
-            "Steam":    st_str,
+            "Method":   METHOD_LABELS.get(r.get("method", ""), r.get("method", "")),
+            "CF Price": f"${r['cf_price']:.2f}" if r.get("cf_price", 0) > 0 else "—",
+            "Steam":    f"${r['steam_price']:.2f}" if r.get("steam_price", 0) > 0 else "—",
         })
-    df = pd.DataFrame(rows)
     log_area.dataframe(
-        df,
+        pd.DataFrame(rows),
         use_container_width=True,
         hide_index=True,
-        height=min(700, 38 + len(rows) * 35),   # ← taller table
+        height=min(700, 38 + len(rows) * 35),
+        column_config={
+            "Status":   st.column_config.TextColumn("Status",  width="small"),
+            "Item":     st.column_config.TextColumn("Item"),
+            "Method":   st.column_config.TextColumn("Method"),
+            "CF Price": st.column_config.TextColumn("CSFloat", width="small"),
+            "Steam":    st.column_config.TextColumn("Steam",   width="small"),
+        },
     )
 
 
-# Temporary store while we process both CF and Steam
-cf_results:   dict[str, tuple[float, bool, str]] = {}   # item_key → (price, stale, method)
-steam_prices: dict[str, float]                   = {}   # item_name → price
+# The progress_cb is called from within sync_prices on the same thread.
+# We parse the log_line to populate our display table.
+current_name: dict = {"v": "", "method": "", "cf": 0.0, "stale": False, "steam": 0.0}
 
-# ── Run sync ──────────────────────────────────────────────────────────────────
-inv = database.get_active_inventory_df()
-if inv.empty:
-    st.info("No inventory.")
-    st.stop()
 
-already_priced = database.get_items_with_todays_price()
-inv_todo = inv[~inv["item_key"].isin(already_priced)]
+def _progress_cb(pct: float, msg: str, log_line: str | None = None):
+    progress_bar.progress(min(pct, 1.0), text=msg[:120])
+    current_item_display.markdown(f"### {msg[:120]}")
 
-if inv_todo.empty:
-    progress_bar.progress(1.0, text="✅ All items already priced today.")
-    current_item_display.markdown("### ✅ All items already priced today — nothing to fetch.")
-    st.stop()
+    if log_line is None:
+        return
 
-total   = len(inv_todo)
-n_names = len(inv_todo["item_name"].unique())
+    line = log_line.strip()
 
-import csf_pricer
+    # Parse CSFloat result lines:  "✅ Name: method → $1.23"  or  "🔴 Name: ..."
+    if line.startswith(("✅", "⚠️", "🔴")) and "→" in line:
+        if line.startswith("✅"):
+            status = "✅ Fresh"
+        elif line.startswith("⚠️"):
+            status = "⚠️ Stale"
+        else:
+            status = "🔴 Missing"
 
-# ── Phase 1: CSFloat ──────────────────────────────────────────────────────────
-for idx, (_, row) in enumerate(inv_todo.iterrows()):
-    name   = row["item_name"]
-    count  = idx + 1                              # ← 1-based display counter
-    pct    = idx / (total + n_names)
-    progress_bar.progress(pct, text=f"📦 CSFloat ({count}/{total}): {name}")
-    current_item_display.markdown(f"### 📦 CSFloat ({count}/{total})\n`{name}`")
+        # Extract name and method
+        rest = line[2:].strip()   # strip emoji prefix
+        if ":" in rest:
+            name_part, detail = rest.split(":", 1)
+            name   = name_part.strip()
+            method = detail.split("→")[0].strip()
+            try:
+                cf_price = float(detail.split("$")[1].strip()) if "$" in detail else 0.0
+            except (IndexError, ValueError):
+                cf_price = 0.0
 
-    price, stale, method = csf_pricer.fetch_cf_price(row.to_dict())
-    cf_results[row["item_key"]] = (price, stale, method)
+            # Find existing row for this name and update, or add new
+            existing = next((r for r in log_rows if r["name"] == name), None)
+            if existing:
+                existing.update({"status": status, "method": method, "cf_price": cf_price})
+            else:
+                log_rows.append({
+                    "status":    status,
+                    "name":      name,
+                    "method":    method,
+                    "cf_price":  cf_price,
+                    "steam_price": 0.0,
+                })
 
-    log_rows.append({
-        "name":        name,
-        "method":      method,
-        "cf_price":    price,
-        "stale":       stale,
-        "steam_price": 0.0,
-    })
+    # Parse Steam result lines:  "   🌐 Steam → $1.23"
+    elif "🌐 Steam →" in line:
+        try:
+            st_price = float(line.split("$")[1].strip()) if "$" in line else 0.0
+        except (IndexError, ValueError):
+            st_price = 0.0
+        # Apply to the most recently added row that has no steam price yet
+        # Steam always follows immediately after its CF call for the same item
+        for r in reversed(log_rows):
+            if r.get("steam_price", 0) == 0:
+                r["steam_price"] = st_price
+                break
+
     _render_log()
-    time.sleep(0.35)
 
-# ── Phase 2: Steam ────────────────────────────────────────────────────────────
-unique_names = inv_todo["item_name"].unique()
 
-for idx, name in enumerate(unique_names):
-    count    = idx + 1                            # ← 1-based display counter
-    base_pct = total / (total + n_names)
-    pct      = base_pct + idx / (n_names + total)
-    progress_bar.progress(min(pct, 0.98), text=f"🌐 Steam ({count}/{total}): {name}")
-    current_item_display.markdown(f"### 🌐 Steam ({count}/{total})\n`{name}`")
-
-    sp = processor.fetch_steam_price(name)
-    steam_prices[name] = sp
-
-    # Update steam prices and collect indices of rows to move to the front
-    indices_to_move = []
-    for i, r in enumerate(log_rows):
-        if r["name"] == name:
-            r["steam_price"] = sp
-            indices_to_move.append(i)
-    
-    # Move updated rows to the end (will appear at top when reversed in _render_log)
-    for i in sorted(indices_to_move, reverse=True):
-        row = log_rows.pop(i)
-        log_rows.append(row)
-    
-    _render_log()
-    time.sleep(1.5)
-
-# ── Save ──────────────────────────────────────────────────────────────────────
-progress_bar.progress(0.99, text="💾 Saving…")
-current_item_display.markdown("### 💾 Saving snapshots…")
-
-import database as db
-from datetime import datetime
-
-ts = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-for _, row in inv_todo.iterrows():
-    key                   = row["item_key"]
-    cf_price, stale, _mth = cf_results.get(key, (0.0, False, "no_price"))
-    st_price              = steam_prices.get(row["item_name"], 0.0)
-    if cf_price > 0 or st_price > 0:
-        db.save_price_snapshot(key, cf_price, st_price, ts, stale=stale)
-
-portfolio = processor.build_portfolio_from_db()
-db.save_portfolio_snapshot(
-    cf_value=portfolio["cf_value"].sum(),
-    steam_value=portfolio["steam_value"].sum(),
-    total_cost=portfolio["total_cost"].sum(),
-    timestamp=ts,
+processor.sync_prices(
+    progress_cb=_progress_cb,
+    trigger="manual",
+    retry_unpriced=is_retry,
+    cf_delay=0.35,
+    steam_delay=1.5,
 )
-db.meta_set("last_price_sync", datetime.now().strftime("%Y-%m-%d %H:%M"))
-db.compress_old_price_history()
-db.compress_old_portfolio_snapshots()
 st.cache_data.clear()
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 progress_bar.progress(1.0, text="✅ Done!")
-skipped = len(inv) - len(inv_todo)
+ok_n    = sum(1 for r in log_rows if r.get("status") == "✅ Fresh")
+stale_n = sum(1 for r in log_rows if r.get("status") == "⚠️ Stale")
+miss_n  = sum(1 for r in log_rows if r.get("status") == "🔴 Missing")
+skipped = len(inv) - len(todo if not is_retry else retry_candidates)
+
 current_item_display.markdown(
-    f"### ✅ Sync complete\n"
-    f"Fetched **{len(inv_todo)}** items · Skipped **{skipped}** (already priced today)"
+    f"### ✅ {'Retry' if is_retry else 'Sync'} complete  —  "
+    f"{len(log_rows)} fetched · {skipped} skipped"
 )
 
-# Summary stats
-ok      = sum(1 for r in log_rows if r["cf_price"] > 0 and not r["stale"])
-stale_n = sum(1 for r in log_rows if r["stale"])
-miss_n  = sum(1 for r in log_rows if r["cf_price"] == 0)
 s1, s2, s3 = st.columns(3)
-s1.metric("✅ Priced", ok)
+s1.metric("✅ Fresh",   ok_n)
 s2.metric("⚠️ Stale",  stale_n)
 s3.metric("🔴 Missing", miss_n)
+
+if miss_n > 0:
+    st.info(
+        f"**{miss_n} item(s)** had no price found. "
+        "Click **🔄 Retry Unpriced** to attempt them again with fresh rate-limit headroom."
+    )
+
+st.caption("Full history in **🕘 Sync History**")

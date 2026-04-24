@@ -11,37 +11,40 @@ API_KEY = os.getenv("CSFLOAT_API_KEY")
 CAT_MAP = {1: "Normal", 2: "StatTrak™", 3: "Souvenir"}
 
 COL_CONFIG = {
-    "item_name":        st.column_config.TextColumn("Item"),
-    "item_type":        st.column_config.TextColumn("Type"),
-    "wear":             st.column_config.TextColumn("Wear"),
-    "category":         st.column_config.TextColumn("Category"),
-    "float_val":        st.column_config.NumberColumn("Float",   format="%.4f"),
-    "paint_seed":       st.column_config.NumberColumn("Pattern", format="%d"),
-    "quantity":         st.column_config.NumberColumn("Qty",     format="%d"),
-    "avg_cost":         st.column_config.NumberColumn("Avg Buy", format="$%.2f"),
-    "cf_price_display": st.column_config.TextColumn("CSFloat",
-                            help="⚠️ = carried from last known price   🔴 = never fetched"),
-    "steam_price":      st.column_config.NumberColumn("Steam",   format="$%.2f"),
-    "total_cost":       st.column_config.NumberColumn("Cost",    format="$%.2f"),
-    "cf_value":         st.column_config.NumberColumn("Value",   format="$%.2f"),
-    "cf_pnl":           st.column_config.NumberColumn("P&L",     format="$%.2f"),
+    "item_name":  st.column_config.TextColumn("Item"),
+    "item_type":  st.column_config.TextColumn("Type"),
+    "wear":       st.column_config.TextColumn("Wear"),
+    "category":   st.column_config.TextColumn("Category"),
+    "float_val":  st.column_config.NumberColumn("Float",   format="%.4f"),
+    "paint_seed": st.column_config.NumberColumn("Pattern", format="%d"),
+    "quantity":   st.column_config.NumberColumn("Qty",     format="%d"),
+    "avg_cost":   st.column_config.NumberColumn("Avg Buy", format="$%.2f"),
+    "cf_price":   st.column_config.NumberColumn("CSFloat", format="$%.2f",
+                      help="Sortable CSFloat floor price in USD"),
+    "cf_status":  st.column_config.TextColumn("CF Status",
+                      help="✅ Fresh price  ·  ⚠️ Last known (stale)  ·  🔴 No price"),
+    "steam_price":st.column_config.NumberColumn("Steam",   format="$%.2f"),
+    "total_cost": st.column_config.NumberColumn("Cost",    format="$%.2f"),
+    "cf_value":   st.column_config.NumberColumn("Value",   format="$%.2f"),
+    "cf_pnl":     st.column_config.NumberColumn("P&L",     format="$%.2f"),
 }
 
 DISPLAY_COLS = [
     "item_name", "item_type", "wear", "category",
     "float_val", "paint_seed", "quantity", "avg_cost",
-    "cf_price_display", "steam_price", "total_cost", "cf_value", "cf_pnl",
+    "cf_price", "cf_status", "steam_price", "total_cost", "cf_value", "cf_pnl",
 ]
 
 
-def _make_cf_display(row) -> str:
+def _make_cf_status(row) -> str:
+    """Separate status indicator column — keeps cf_price purely numeric for sorting."""
     price = row["cf_price"]
     stale = row.get("cf_stale", False)
     if price == 0:
-        return "🔴 N/A"
+        return "🔴 No price"
     if stale:
-        return f"⚠️ ${price:,.2f}"
-    return f"${price:,.2f}"
+        return "⚠️ Stale"
+    return "✅ Fresh"
 
 
 # ── User info (still used for main-area title row) ────────────────────────────
@@ -141,8 +144,8 @@ if not portfolio.empty:
         sel_cat = st.selectbox("Category", ["All", "Normal", "StatTrak™", "Souvenir"])
 
     display = portfolio.copy()
-    display["category"]         = display["category"].map(CAT_MAP)
-    display["cf_price_display"] = display.apply(_make_cf_display, axis=1)
+    display["category"]  = display["category"].map(CAT_MAP)
+    display["cf_status"] = display.apply(_make_cf_status, axis=1)
     if sel_type != "All": display = display[display["item_type"] == sel_type]
     if sel_wear != "All": display = display[display["wear"]      == sel_wear]
     if sel_cat  != "All": display = display[display["category"]  == sel_cat]
@@ -157,7 +160,7 @@ if not portfolio.empty:
     stale_count   = int(portfolio.get("cf_stale", pd.Series(dtype=bool)).sum())
     missing_count = int((portfolio["cf_price"] == 0).sum())
     parts = []
-    if stale_count:   parts.append(f"⚠️ {stale_count} item(s) using last known price")
+    if stale_count:   parts.append(f"⚠️ {stale_count} item(s) with stale (last known) price")
     if missing_count: parts.append(f"🔴 {missing_count} item(s) with no price data")
     if parts:
         st.caption("  ·  ".join(parts))
