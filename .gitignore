@@ -4,3 +4,4 @@ data/*.json
 .env
 __pycache__/
 .venv/
+cs2_tracker.code-workspace
