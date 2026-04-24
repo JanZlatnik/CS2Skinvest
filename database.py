@@ -151,6 +151,14 @@ def migrate_db():
         if "stale" not in cols:
             conn.execute("ALTER TABLE price_history ADD COLUMN stale INTEGER NOT NULL DEFAULT 0")
 
+        # meta: create if not present (for users upgrading from earlier versions)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+
         # sync_log: create if not present (for users upgrading from earlier versions)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS sync_log (

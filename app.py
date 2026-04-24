@@ -9,6 +9,9 @@ import scheduler
 load_dotenv()
 API_KEY = os.getenv("CSFLOAT_API_KEY")
 
+# Initialize database on first run
+database.init_db()
+
 img_icon = Image.open("assets/icon.png")
 st.set_page_config(page_title="CS2 SkInvest", layout="wide", page_icon=img_icon)
 

@@ -1,6 +1,7 @@
 data/*.csv
 data/*.db
 data/*.json
+data/*.log
 .env
 __pycache__/
 .venv/
