@@ -49,14 +49,14 @@ with b1:
     start_full  = st.button(
         "▶ Sync Prices",
         type="primary",
-        use_container_width=True,
+        width='stretch',
         disabled=todo.empty,
         help="Fetch prices for all items not yet priced today",
     )
 with b2:
     start_retry = st.button(
         "🔄 Retry Unpriced",
-        use_container_width=True,
+        width='stretch',
         disabled=retry_candidates.empty,
         help="Re-fetch only items that had no price or stale price in today's sync",
     )
@@ -93,7 +93,7 @@ def _render_log():
         })
     log_area.dataframe(
         pd.DataFrame(rows),
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         height=min(700, 38 + len(rows) * 35),
         column_config={

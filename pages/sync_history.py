@@ -208,7 +208,7 @@ with tab_auto:
         st.markdown("")
         if on_windows:
             btn_label = "✅ Enable Auto-Sync" if not status["exists"] else "🔄 Update Schedule"
-            if st.button(btn_label, use_container_width=True, type="primary"):
+            if st.button(btn_label, width='stretch', type="primary"):
                 ok, msg = scheduler.create_task(run_time_str)
                 if ok:
                     st.success(msg)
@@ -216,7 +216,7 @@ with tab_auto:
                 else:
                     st.error(msg)
 
-            if st.button("🗑️ Remove Task", use_container_width=True,
+            if st.button("🗑️ Remove Task", width='stretch',
                          disabled=not status["exists"], type="secondary"):
                 ok, msg = scheduler.delete_task()
                 if ok:
@@ -225,7 +225,7 @@ with tab_auto:
                 else:
                     st.error(msg)
 
-            if st.button("▶ Run Now (test)", use_container_width=True,
+            if st.button("▶ Run Now (test)", width='stretch',
                          disabled=not status["exists"],
                          help="Trigger the task immediately to verify it works"):
                 ok, msg = scheduler.run_task_now()

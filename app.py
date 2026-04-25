@@ -7,6 +7,13 @@ import database
 import scheduler
 import processor
 
+# ── Update system (optional — gracefully disabled if updater.py missing) ──────
+try:
+    import updater as _updater
+    _UPDATER_AVAILABLE = True
+except ImportError:
+    _UPDATER_AVAILABLE = False
+
 load_dotenv()
 API_KEY = os.getenv("CSFLOAT_API_KEY")
 
@@ -63,6 +70,17 @@ def fetch_user_info():
     except Exception:
         pass
     return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_update_check() -> dict:
+    """Check GitHub for updates once per hour."""
+    if not _UPDATER_AVAILABLE:
+        return {}
+    try:
+        return _updater.check_for_update()
+    except Exception:
+        return {}
 
 
 with st.sidebar:
@@ -147,6 +165,52 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
         st.caption("Set up in **🕘 Sync History**")
+
+    st.divider()
+
+    # ── 5. Version & update ───────────────────────────────────────────────────
+    local_ver = _updater.get_local_version() if _UPDATER_AVAILABLE else "—"
+    st.caption(f"Version: **{local_ver}**")
+
+    if _UPDATER_AVAILABLE:
+        update_info = _cached_update_check()
+
+        if update_info.get("update_available"):
+            latest = update_info["latest_version"]
+            st.markdown(
+                f"<span style='color:#f4a261;font-size:0.82rem'>"
+                f"🔄 Update available: v{latest}</span>",
+                unsafe_allow_html=True,
+            )
+
+            # Show release notes in an expander
+            notes = update_info.get("release_notes")
+            if notes:
+                with st.expander("What's new"):
+                    st.markdown(notes[:800])
+
+            if st.button(f"⬇️ Download v{latest}", use_container_width=True,
+                         help="Download update (applied on next app restart)"):
+                prog_bar = st.progress(0.0, text="Preparing…")
+
+                def _prog(pct, msg):
+                    prog_bar.progress(min(pct, 1.0), text=msg[:80])
+
+                success, msg = _updater.download_update(update_info, progress_cb=_prog)
+                if success:
+                    prog_bar.progress(1.0, text="✅ Download complete!")
+                    st.success(
+                        f"v{latest} is ready.  \n"
+                        "Close and re-open the app to apply the update."
+                    )
+                    st.cache_data.clear()
+                else:
+                    prog_bar.empty()
+                    st.error(f"Download failed: {msg}")
+
+        elif update_info.get("error") and "not configured" not in update_info["error"]:
+            # Only show network/API errors (not the "not configured" placeholder)
+            st.caption("_(update check failed)_")
 
 
 # ── Page registration ─────────────────────────────────────────────────────────
