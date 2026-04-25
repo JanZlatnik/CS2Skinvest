@@ -156,18 +156,27 @@ def create_windows_shortcut(ico_path: Path | None) -> bool:
     pythonw   = py_dir / "pythonw.exe"
     target_exe = str(pythonw) if pythonw.exists() else sys.executable
 
-    icon_line = f'oLink.IconLocation = "{ico_path}"' if ico_path and ico_path.exists() else ""
+    # Normalize paths for VBScript (forward slashes work better)
+    shortcut_path_vbs = str(shortcut_path).replace("\\", "/")
+    target_exe_vbs = str(target_exe).replace("\\", "/")
+    launcher_vbs = str(launcher).replace("\\", "/")
+    app_dir_vbs = str(APP_DIR).replace("\\", "/")
 
-    vbs = f"""\
-Set oWS = WScript.CreateObject("WScript.Shell")
-Set oLink = oWS.CreateShortcut("{shortcut_path}")
-oLink.TargetPath = "{target_exe}"
-oLink.Arguments = """{launcher}"""
-oLink.WorkingDirectory = "{APP_DIR}"
-oLink.Description = "CS2 SkInvest - CS2 Skin Portfolio Tracker"
-{icon_line}
-oLink.Save
-"""
+    vbs_lines = [
+        'Set oWS = WScript.CreateObject("WScript.Shell")',
+        f'Set oLink = oWS.CreateShortcut("{shortcut_path_vbs}")',
+        f'oLink.TargetPath = "{target_exe_vbs}"',
+        f'oLink.Arguments = """{launcher_vbs}"""',
+        f'oLink.WorkingDirectory = "{app_dir_vbs}"',
+        'oLink.Description = "CS2 SkInvest - CS2 Skin Portfolio Tracker"',
+    ]
+    
+    if ico_path and ico_path.exists():
+        icon_path_vbs = str(ico_path).replace("\\", "/")
+        vbs_lines.append(f'oLink.IconLocation = "{icon_path_vbs}"')
+    
+    vbs_lines.append('oLink.Save')
+    vbs = "\n".join(vbs_lines)
 
     vbs_path = APP_DIR / "data" / "_create_shortcut.vbs"
     vbs_path.parent.mkdir(parents=True, exist_ok=True)
