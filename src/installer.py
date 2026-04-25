@@ -4,7 +4,7 @@ installer.py
 CS2 SkInvest -- interactive setup wizard.
 
 Designed to be run by someone with zero programming experience:
-  * Checks Python version (3.9+)
+  * Checks Python version (3.10+)
   * Installs all pip dependencies
   * Asks for the CSFloat API key -> writes .env at repo root
   * Creates a desktop shortcut (Windows) pointing to src/launcher.py
@@ -18,7 +18,6 @@ Called by setup.bat as:  python src\\installer.py
 import sys
 import os
 import subprocess
-import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -27,25 +26,19 @@ SRC_DIR  = Path(__file__).resolve().parent
 ROOT_DIR = SRC_DIR.parent
 
 
-# ── Colour helpers ------------------------------------------------------------
-_USE_COLOUR = sys.stdout.isatty() if hasattr(sys.stdout, "isatty") else False
-
-def _c(text: str, code: str) -> str:
-    return "\033[{}m{}\033[0m".format(code, text) if _USE_COLOUR else text
-
-def ok(msg):   print(_c("  [OK]  {}".format(msg), "32"))
-def err(msg):  print(_c("  [!!]  {}".format(msg), "31"))
-def warn(msg): print(_c("  [??]  {}".format(msg), "33"))
-def info(msg): print(_c("  [..]  {}".format(msg), "36"))
-def head(msg): print(_c("\n{}\n  {}\n{}".format("-"*50, msg, "-"*50), "1"))
+def ok(msg):   print("  [OK]  {}".format(msg))
+def err(msg):  print("  [!!]  {}".format(msg))
+def warn(msg): print("  [??]  {}".format(msg))
+def info(msg): print("  [..]  {}".format(msg))
+def head(msg): print("\n{}\n  {}\n{}".format("-"*50, msg, "-"*50))
 
 
-# ── Step 1 : Check Python -----------------------------------------------------
+# -- Step 1 : Check Python -----------------------------------------------------
 
 def check_python() -> bool:
     v = sys.version_info
-    if v.major < 3 or (v.major == 3 and v.minor < 9):
-        err("Python 3.9+ required. You have {}.{}.{}.".format(
+    if v.major < 3 or (v.major == 3 and v.minor < 10):
+        err("Python 3.10 or later is required. You have {}.{}.{}.".format(
             v.major, v.minor, v.micro))
         info("Download Python from:  https://www.python.org/downloads/")
         info("During install, tick 'Add Python to PATH'")
@@ -54,7 +47,7 @@ def check_python() -> bool:
     return True
 
 
-# ── Step 2 : Install requirements --------------------------------------------
+# -- Step 2 : Install requirements --------------------------------------------
 
 def install_requirements() -> bool:
     req = ROOT_DIR / "requirements.txt"
@@ -77,7 +70,7 @@ def install_requirements() -> bool:
         return False
 
 
-# ── Step 3 : Create / update .env --------------------------------------------
+# -- Step 3 : Create / update .env --------------------------------------------
 
 def setup_env() -> bool:
     env_file = ROOT_DIR / ".env"
@@ -110,13 +103,12 @@ def setup_env() -> bool:
     return True
 
 
-# ── Step 4 : Check / report icon.ico -----------------------------------------
+# -- Step 4 : Check / report icon.ico -----------------------------------------
 
 def check_ico() -> Optional[Path]:
     """
     icon.ico should already be committed to assets/.
-    If it is missing (e.g. old clone), try to generate it from icon.png.
-    Returns the path if the .ico exists, else None.
+    If missing (old clone), tries to regenerate from icon.png.
     """
     assets = ROOT_DIR / "assets"
     ico    = assets / "icon.ico"
@@ -126,7 +118,7 @@ def check_ico() -> Optional[Path]:
         ok("assets/icon.ico found")
         return ico
 
-    warn("assets/icon.ico not found -- attempting to create from icon.png...")
+    warn("assets/icon.ico not found -- trying to create from icon.png...")
     if not png.exists():
         warn("assets/icon.png also missing -- shortcut will use a default icon.")
         return None
@@ -146,12 +138,12 @@ def check_ico() -> Optional[Path]:
         return None
 
 
-# ── Step 5a : Windows desktop shortcut ---------------------------------------
+# -- Step 5a : Windows desktop shortcut ---------------------------------------
 
 def create_windows_shortcut(ico_path: Optional[Path]) -> bool:
     """
-    Create 'CS2 SkInvest.lnk' on the user's Desktop using a VBScript.
-    No extra libraries needed -- uses the built-in Windows Script Host.
+    Creates 'CS2 SkInvest.lnk' on the Desktop using a temporary VBScript.
+    No extra libraries needed.
     """
     try:
         import winreg  # noqa -- confirms we are on Windows
@@ -168,12 +160,12 @@ def create_windows_shortcut(ico_path: Optional[Path]) -> bool:
     launcher      = SRC_DIR / "launcher.py"
 
     # pythonw.exe suppresses the console window; fall back to python.exe
-    py_dir    = Path(sys.executable).parent
-    pythonw   = py_dir / "pythonw.exe"
+    py_dir     = Path(sys.executable).parent
+    pythonw    = py_dir / "pythonw.exe"
     target_exe = str(pythonw if pythonw.exists() else sys.executable)
 
-    # Build VBScript as a list of lines to avoid triple-quote f-string issues.
-    # Chr(34) is a double-quote character inside VBScript strings.
+    # Build VBScript line by line to avoid any f-string / quoting issues.
+    # Chr(34) produces a literal double-quote inside a VBScript string.
     vbs_lines = [
         'Set oWS = WScript.CreateObject("WScript.Shell")',
         'Set oLink = oWS.CreateShortcut("{}")'.format(shortcut_path),
@@ -207,7 +199,7 @@ def create_windows_shortcut(ico_path: Optional[Path]) -> bool:
         return False
 
 
-# ── Step 5b : macOS/Linux launch script --------------------------------------
+# -- Step 5b : macOS / Linux launch script ------------------------------------
 
 def create_unix_launch_script() -> bool:
     script = ROOT_DIR / "start.sh"
@@ -225,13 +217,13 @@ def create_unix_launch_script() -> bool:
         return False
 
 
-# ── Main wizard ---------------------------------------------------------------
+# -- Main wizard ---------------------------------------------------------------
 
 def main():
     print()
-    print(_c("=" * 54, "1"))
-    print(_c("   CS2 SkInvest -- Setup Wizard", "1;36"))
-    print(_c("=" * 54, "1"))
+    print("=" * 54)
+    print("   CS2 SkInvest -- Setup Wizard")
+    print("=" * 54)
 
     head("Step 1/4 -- Checking Python")
     if not check_python():
@@ -263,9 +255,9 @@ def main():
         create_unix_launch_script()
 
     print()
-    print(_c("=" * 54, "1"))
-    print(_c("  [OK]  Setup complete!", "1;32"))
-    print(_c("=" * 54, "1"))
+    print("=" * 54)
+    print("  Setup complete!")
+    print("=" * 54)
     print()
     if sys.platform == "win32":
         info("Double-click 'CS2 SkInvest' on your desktop to start.")
