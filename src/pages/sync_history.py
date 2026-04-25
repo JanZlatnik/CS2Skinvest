@@ -4,8 +4,8 @@ sync_history.py  —  Sync History & Auto-Sync Setup page
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
-import database
-import scheduler
+import src.database as database
+import src.scheduler as scheduler
 
 st.title("🕘 Sync History & Auto-Sync")
 

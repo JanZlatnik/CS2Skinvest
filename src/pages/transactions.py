@@ -3,8 +3,8 @@ import pandas as pd
 import requests
 import os
 from datetime import date as date_type
-import processor
-import database
+import src.processor as processor
+import src.database as database
 
 MANUAL_CSV = "data/manual_ledger.csv"
 CAT_MAP    = {"Normal": 1, "StatTrak™": 2, "Souvenir": 3}
@@ -187,7 +187,7 @@ with tab_manual:
             label_visibility="collapsed",
         )
     with btn_col:
-        if st.button("Search", use_container_width=True):
+        if st.button("Search", width='stretch'):
             if query.strip():
                 with st.spinner("Searching Steam Market…"):
                     st.session_state.tx_search_results = steam_search(query.strip())
@@ -288,7 +288,7 @@ with tab_manual:
                                 help="Pattern only applies to Skins and Charms")
 
         submitted = st.form_submit_button("💾 Save transaction",
-                                          use_container_width=True, type="primary")
+                                          width='stretch', type="primary")
 
     if submitted:
         final_name = item_name_input.strip()
@@ -467,7 +467,7 @@ with tab_sell:
                         )
 
                 sell_submitted = st.form_submit_button(
-                    "💾 Record sell", use_container_width=True, type="primary"
+                    "💾 Record sell", width='stretch', type="primary"
                 )
 
             if sell_submitted:
@@ -560,7 +560,7 @@ All prices in the CSV must be in **USD**. Convert manually before importing if n
                                      ("Float", None), ("Paint_Seed", None)]:
                     if col not in df_up.columns:
                         df_up[col] = default
-                st.dataframe(df_up, use_container_width=True, hide_index=True)
+                st.dataframe(df_up, width='stretch', hide_index=True)
                 if st.button("✅ Confirm import", type="primary"):
                     os.makedirs("data", exist_ok=True)
                     if os.path.exists(MANUAL_CSV):

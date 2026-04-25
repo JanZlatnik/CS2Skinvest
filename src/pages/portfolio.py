@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
-import processor
-import database
+import plotly.express as px
+import src.processor as processor
+import src.database as database
 
 CAT_MAP = {1: "Normal", 2: "StatTrak™", 3: "Souvenir"}
 
@@ -67,8 +68,8 @@ if yest_cf_val > 0:
     delta_pnl    = cf_pnl - yest_pnl
     yest_pct     = (yest_pnl / yest_cost * 100) if yest_cost else 0.0
     delta_pct    = pnl_pct - yest_pct
-    delta_pnl_str = f"{delta_pnl:+,.2f}"
-    delta_pct_str = f"{delta_pct:+.1f}%"
+    delta_pnl_str = f"{delta_pnl:+,.2f} vs yesterday"
+    delta_pct_str = f"{delta_pct:+.1f}% vs yesterday"
 else:
     delta_pnl_str = None
     delta_pct_str = None
@@ -84,14 +85,12 @@ if has_steam:
 
 st.divider()
 
-# ── Holdings table ───────────────────────────────────────────────────────────
-if True:  # keep indentation level consistent
-    # ── Search bar (full width, above dropdowns) ──────────────────────────────
-    search = st.text_input("🔍 Search item name", placeholder="AK-47, Karambit, Fade…",
-                           key="pf_search")
+# ── Tabs: Table | Distribution ────────────────────────────────────────────────
+tab_table, tab_pie = st.tabs(["📋 Holdings", "🥧 Distribution"])
 
-    # ── Filters ───────────────────────────────────────────────────────────────
-    f1, f2, f3 = st.columns(3)
+with tab_table:
+    # ── Filters + search ──────────────────────────────────────────────────────
+    f1, f2, f3, f4 = st.columns([2, 2, 2, 3])
     with f1:
         type_opts = ["All"] + sorted(portfolio["item_type"].dropna().unique().tolist())
         sel_type  = st.selectbox("Type", type_opts, key="pf_type")
@@ -102,6 +101,9 @@ if True:  # keep indentation level consistent
     with f3:
         sel_cat = st.selectbox("Category", ["All", "Normal", "StatTrak™", "Souvenir"],
                                key="pf_cat")
+    with f4:
+        search = st.text_input("🔍 Search item name", placeholder="AK-47, Karambit, Fade…",
+                               label_visibility="collapsed", key="pf_search")
 
     display = portfolio.copy()
     display["category"] = display["category"].map(CAT_MAP)
@@ -121,7 +123,7 @@ if True:  # keep indentation level consistent
             and (c != "steam_price" or has_steam)]
 
     st.dataframe(display[cols], column_config=COL_CONFIG,
-                 use_container_width=True, hide_index=True, height=580)
+                 width='stretch', hide_index=True, height=580)
 
     # Legend
     stale_n   = int(portfolio.get("cf_stale", pd.Series(dtype=bool)).sum())
@@ -131,3 +133,65 @@ if True:  # keep indentation level consistent
     if missing_n: parts.append(f"🔴 {missing_n} missing")
     legend = "  ·  ".join(parts) + "  ·  " if parts else ""
     st.caption(f"{legend}Showing {len(display)} of {len(portfolio)} items")
+
+with tab_pie:
+    # ── Portfolio distribution pie charts ─────────────────────────────────────
+    pie_col = st.radio("Value by", ["Item Type", "Wear", "Category"],
+                       horizontal=True, key="pie_col")
+
+    if pie_col == "Item Type":
+        group_col = "item_type"
+        title     = "Portfolio value by item type"
+    elif pie_col == "Wear":
+        group_col = "wear"
+        title     = "Portfolio value by wear tier"
+    else:
+        grp        = portfolio.copy()
+        grp["cat"] = grp["category"].map(CAT_MAP)
+        group_col  = "cat"
+        title      = "Portfolio value by category"
+        portfolio  = grp   # temp reassign for groupby below
+
+    grp_df = (
+        portfolio.groupby(group_col, dropna=False)["cf_value"]
+        .sum()
+        .reset_index()
+        .rename(columns={group_col: "label", "cf_value": "value"})
+    )
+    grp_df = grp_df[grp_df["value"] > 0]
+    grp_df["label"] = grp_df["label"].fillna("Unknown")
+
+    if grp_df.empty:
+        st.info("No value data for distribution chart. Run **Sync Prices** first.")
+    else:
+        p1, p2 = st.columns([3, 2])
+        with p1:
+            fig = px.pie(
+                grp_df, values="value", names="label",
+                title=title,
+                hole=0.42,
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig.update_traces(
+                textposition="inside",
+                textinfo="percent+label",
+                hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>",
+            )
+            fig.update_layout(
+                showlegend=True,
+                legend=dict(orientation="v", x=1.02, y=0.5),
+                margin=dict(t=40, b=10, l=10, r=10),
+                height=420,
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)",
+            )
+            st.plotly_chart(fig, width='stretch')
+
+        with p2:
+            st.markdown("**Breakdown**")
+            total_val = grp_df["value"].sum()
+            tbl = grp_df.sort_values("value", ascending=False).copy()
+            tbl["Share"] = (tbl["value"] / total_val * 100).map("{:.1f}%".format)
+            tbl["Value"] = tbl["value"].map("${:,.2f}".format)
+            tbl = tbl.rename(columns={"label": "Group"})[["Group", "Value", "Share"]]
+            st.dataframe(tbl, hide_index=True, width='stretch')

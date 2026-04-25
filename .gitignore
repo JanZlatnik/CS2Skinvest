@@ -1,5 +1,41 @@
-data/*
+# ── User data (local only, never synced) ─────────────────────────────────────
+data/
 .env
+
+# ── Python cache ──────────────────────────────────────────────────────────────
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
 .venv/
+env/
+.env/
+
+# ── OS junk ───────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor / IDE ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
 cs2_tracker.code-workspace
+*.swp
+*.swo
+
+# ── Build / dist ──────────────────────────────────────────────────────────────
+dist/
+build/
+*.egg-info/
+
+# ── Installer temporaries ─────────────────────────────────────────────────────
+src/data/
+
+
+# ── Development files (uncomment if needed) ─────────────────────────────────────
+make_ico.py
+src/test_price.py

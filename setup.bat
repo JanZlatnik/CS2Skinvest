@@ -1,17 +1,16 @@
 @echo off
 setlocal EnableDelayedExpansion
-title CS2 SkInvest — Setup
+title CS2 SkInvest - Setup
 
 echo.
 echo =====================================================
-echo    CS2 SkInvest — Setup
+echo    CS2 SkInvest - Setup
 echo =====================================================
 echo.
 
-:: ── Try to find Python ────────────────────────────────────────────────────────
+:: --- Try to find Python -------------------------------------------------------
 set PYTHON=
 
-:: First try 'python', then 'python3', then the py launcher
 python --version >nul 2>&1
 if !errorlevel! == 0 (
     set PYTHON=python
@@ -30,19 +29,20 @@ if !errorlevel! == 0 (
     goto :python_found
 )
 
-:: ── Python not found ─────────────────────────────────────────────────────────
+:: --- Python not found ---------------------------------------------------------
 echo   Python was not found on this computer.
 echo.
 
-:: Try to install via winget (available on Windows 10 1709+ and Windows 11)
+:: Try to install via winget (Windows 10 1709+ / Windows 11)
 winget --version >nul 2>&1
 if !errorlevel! == 0 (
-    echo   Attempting to install Python automatically via Windows Package Manager...
-    echo   (This may take a few minutes and requires internet access.)
+    echo   Attempting to install Python via Windows Package Manager...
+    echo   This may take a few minutes and requires internet access.
     echo.
     winget install --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
     echo.
-    :: Refresh PATH so the new python is visible
+
+    :: Refresh PATH so newly installed python is visible in this session
     for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USERPATH=%%B"
     for /f "tokens=2*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do set "SYSPATH=%%B"
     set "PATH=%SYSPATH%;%USERPATH%"
@@ -55,7 +55,7 @@ if !errorlevel! == 0 (
     )
 )
 
-:: Cannot install automatically — show manual instructions
+:: --- Cannot install automatically - show manual instructions ------------------
 echo.
 echo   =====================================================
 echo    ACTION REQUIRED
@@ -69,8 +69,8 @@ echo.
 echo     2. Click "Download Python 3.x.x"
 echo.
 echo     3. Run the installer.
-echo        IMPORTANT: check the box that says
-echo        "Add Python to PATH"  (at the bottom of the first screen)
+echo        IMPORTANT: tick the checkbox that says
+echo        "Add Python to PATH"  (bottom of the first screen)
 echo.
 echo     4. After installation finishes, re-run this setup.bat
 echo.
@@ -78,11 +78,11 @@ pause
 exit /b 1
 
 :python_found
-echo   Found Python: 
+echo   Found Python:
 %PYTHON% --version
 echo.
 
-:: ── Check minimum version (3.9) ───────────────────────────────────────────────
+:: --- Check minimum version (3.9) ---------------------------------------------
 %PYTHON% -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>&1
 if !errorlevel! neq 0 (
     echo   ERROR: Python 3.9 or later is required.
@@ -98,7 +98,8 @@ echo.
 echo   Running installer...
 echo.
 
-%PYTHON% installer.py
+:: installer.py lives in src\
+%PYTHON% src\installer.py
 
 echo.
 pause

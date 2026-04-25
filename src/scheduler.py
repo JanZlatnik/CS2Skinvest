@@ -1,15 +1,10 @@
 """
 scheduler.py
-────────────
+------------
 Windows Task Scheduler integration for CS2 SkInvest auto-sync.
 
-Registers a daily task that:
-  • Runs auto_sync.py at the configured time (default 06:00)
-  • Also runs on next startup if the scheduled time was missed
-    (computer was off — Task Scheduler "start missed tasks" flag)
-
-Uses only built-in Windows tools (schtasks.exe) — no extra dependencies.
-Safe to call on every app startup (query is read-only; create/delete only on demand).
+Registers a daily task that runs src/auto_sync.py at the configured time.
+The working directory is set to ROOT_DIR so all relative data/ paths resolve.
 """
 
 import subprocess
@@ -19,34 +14,28 @@ import re
 from pathlib import Path
 from datetime import datetime
 
+SRC_DIR  = Path(__file__).resolve().parent   # .../repo/src
+ROOT_DIR = SRC_DIR.parent                    # .../repo
+
 TASK_NAME = "CS2SkInvest_AutoSync"
 
 
-def _app_dir() -> Path:
-    return Path(__file__).resolve().parent
-
-
 def _python_exe() -> str:
-    """
-    Return the pythonw.exe path (silent, no console window).
-    Falls back to python.exe if pythonw is not found.
-    """
-    py = Path(sys.executable)
+    """Return pythonw.exe (silent) or fall back to python.exe."""
+    py      = Path(sys.executable)
     pythonw = py.parent / "pythonw.exe"
     return str(pythonw) if pythonw.exists() else str(py)
 
 
 def _schtasks(*args) -> subprocess.CompletedProcess:
-    """Run schtasks.exe with given arguments. Returns CompletedProcess."""
     return subprocess.run(
         ["schtasks", *args],
-        capture_output=True,
-        text=True,
+        capture_output=True, text=True,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API ----------------------------------------------------------------
 
 def is_windows() -> bool:
     return sys.platform == "win32"
@@ -54,16 +43,8 @@ def is_windows() -> bool:
 
 def get_task_status() -> dict:
     """
-    Query the scheduled task and return a status dict:
-    {
-        exists       : bool,
-        enabled      : bool,
-        last_run     : str | None,   # "YYYY-MM-DD HH:MM" or None
-        next_run     : str | None,
-        last_result  : str | None,   # e.g. "0" = success
-        run_time     : str,          # "06:00" parsed from task, or ""
-        error        : str | None,
-    }
+    Query the scheduled task.
+    Returns dict: exists, enabled, last_run, next_run, last_result, run_time, error
     """
     if not is_windows():
         return _non_windows_stub()
@@ -71,7 +52,6 @@ def get_task_status() -> dict:
     result = _schtasks("/query", "/tn", TASK_NAME, "/fo", "LIST", "/v")
 
     if result.returncode != 0:
-        # Task doesn't exist
         return {
             "exists": False, "enabled": False,
             "last_run": None, "next_run": None,
@@ -86,22 +66,19 @@ def get_task_status() -> dict:
             k, _, v = line.partition(":")
             info[k.strip().lower()] = v.strip()
 
-    def _parse_dt(raw: str) -> str | None:
+    def _parse_dt(raw: str):
         if not raw or raw.upper() in ("N/A", "NEVER"):
             return None
-        # schtasks returns locale-dependent format; try to normalise
         for fmt in ("%d/%m/%Y %H:%M:%S", "%m/%d/%Y %H:%M:%S",
                     "%Y-%m-%d %H:%M:%S", "%d.%m.%Y %H:%M:%S"):
             try:
                 return datetime.strptime(raw[:19], fmt).strftime("%Y-%m-%d %H:%M")
             except ValueError:
                 continue
-        return raw[:16]   # return raw if parsing fails
+        return raw[:16]
 
-    # Extract scheduled run time from "Start Time" field
-    raw_start = info.get("start time", "")
-    run_time  = raw_start[:5] if len(raw_start) >= 5 else ""
-
+    raw_start  = info.get("start time", "")
+    run_time   = raw_start[:5] if len(raw_start) >= 5 else ""
     status_raw = info.get("status", info.get("scheduled task state", "")).lower()
     enabled    = "disabled" not in status_raw
 
@@ -116,35 +93,29 @@ def get_task_status() -> dict:
     }
 
 
-def create_task(run_time: str = "06:00") -> tuple[bool, str]:
+def create_task(run_time: str = "06:00") -> tuple:
     """
     Create (or overwrite) the scheduled task.
-
-    run_time : "HH:MM" 24-hour format, e.g. "06:00"
-
+    run_time: "HH:MM" 24-hour, e.g. "06:00"
     Returns (success: bool, message: str)
     """
     if not is_windows():
         return False, "Task Scheduler is only available on Windows."
 
-    app_dir    = _app_dir()
     python_exe = _python_exe()
-    script     = app_dir / "auto_sync.py"
+    script     = SRC_DIR / "auto_sync.py"
 
     if not script.exists():
-        return False, f"auto_sync.py not found at: {script}"
+        return False, "auto_sync.py not found at: {}".format(script)
 
-    # Build the task XML so we can set RunOnlyIfIdle=false and
-    # StartWhenAvailable=true (run missed task on next login/startup).
-    # Using /xml pipe is the most reliable cross-locale approach.
-    xml = f"""<?xml version="1.0" encoding="UTF-16"?>
+    xml = """<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
-    <Description>CS2 SkInvest — daily price sync</Description>
+    <Description>CS2 SkInvest - daily price sync</Description>
   </RegistrationInfo>
   <Triggers>
     <CalendarTrigger>
-      <StartBoundary>2024-01-01T{run_time}:00</StartBoundary>
+      <StartBoundary>2024-01-01T{}:00</StartBoundary>
       <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
       <Enabled>true</Enabled>
       <ScheduleByDay>
@@ -173,62 +144,61 @@ def create_task(run_time: str = "06:00") -> tuple[bool, str]:
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{python_exe}</Command>
-      <Arguments>"{script}"</Arguments>
-      <WorkingDirectory>{app_dir}</WorkingDirectory>
+      <Command>{}</Command>
+      <Arguments>"{}"</Arguments>
+      <WorkingDirectory>{}</WorkingDirectory>
     </Exec>
   </Actions>
-</Task>"""
+</Task>""".format(run_time, python_exe, script, ROOT_DIR)
 
-    # Write XML to a temp file (Task Scheduler requires a file path for /xml)
-    xml_path = app_dir / "data" / "_task_tmp.xml"
+    xml_path = ROOT_DIR / "data" / "_task_tmp.xml"
     xml_path.parent.mkdir(parents=True, exist_ok=True)
     xml_path.write_text(xml, encoding="utf-16")
 
-    result = _schtasks(
-        "/create",
-        "/tn",  TASK_NAME,
-        "/xml", str(xml_path),
-        "/f",          # overwrite if already exists
-    )
+    result = _schtasks("/create", "/tn", TASK_NAME, "/xml", str(xml_path), "/f")
 
-    # Clean up temp file
     try:
         xml_path.unlink()
     except Exception:
         pass
 
     if result.returncode == 0:
-        return True, f"Task '{TASK_NAME}' created — runs daily at {run_time}."
+        return True, "Task '{}' created -- runs daily at {}.".format(TASK_NAME, run_time)
     else:
         err = result.stderr.strip() or result.stdout.strip()
-        return False, f"Failed to create task: {err}"
+        return False, "Failed to create task: {}".format(err)
 
 
-def delete_task() -> tuple[bool, str]:
+def delete_task() -> tuple:
     """Remove the scheduled task. Returns (success, message)."""
     if not is_windows():
         return False, "Task Scheduler is only available on Windows."
-
     result = _schtasks("/delete", "/tn", TASK_NAME, "/f")
     if result.returncode == 0:
-        return True, f"Task '{TASK_NAME}' removed."
+        return True, "Task '{}' removed.".format(TASK_NAME)
     err = result.stderr.strip() or result.stdout.strip()
-    return False, f"Could not remove task: {err}"
+    return False, "Could not remove task: {}".format(err)
 
 
-def run_task_now() -> tuple[bool, str]:
+def run_task_now() -> tuple:
     """Trigger the task to run immediately (for testing)."""
     if not is_windows():
         return False, "Task Scheduler is only available on Windows."
     result = _schtasks("/run", "/tn", TASK_NAME)
     if result.returncode == 0:
-        return True, "Task triggered — check the log in a few minutes."
+        return True, "Task triggered -- check the log in a few minutes."
     err = result.stderr.strip() or result.stdout.strip()
-    return False, f"Could not trigger task: {err}"
+    return False, "Could not trigger task: {}".format(err)
 
 
-# ── Non-Windows stub ──────────────────────────────────────────────────────────
+# ── Helpers used by sync_history.py ------------------------------------------
+
+def _app_dir() -> Path:
+    """Returns ROOT_DIR for log path resolution in sync_history.py."""
+    return ROOT_DIR
+
+
+# ── Non-Windows stub ----------------------------------------------------------
 
 def _non_windows_stub() -> dict:
     return {

@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-import processor, database
+import src.processor as processor, src.database as database
 
 st.title("📊 Charts & Analytics")
 
@@ -58,7 +58,7 @@ with tab1:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
         if not has_steam_hist:
             st.caption("Steam values will appear here after the first Sync Prices.")
     else:
@@ -113,7 +113,7 @@ with tab2:
                 hovermode="x unified",
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width='stretch')
         else:
             tip = "Run **Sync Prices**." if src == "CSFloat" else "No Steam data yet — run **Sync Prices**."
             st.info(f"No {src} price history yet. {tip}")
@@ -145,7 +145,7 @@ with tab3:
             height=max(CHART_HEIGHT, len(pl) * 38),
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
         )
-        st.plotly_chart(fig3, use_container_width=True)
+        st.plotly_chart(fig3, width='stretch')
     else:
         st.info("No portfolio data.")
 
@@ -184,7 +184,7 @@ with tab4:
                 plot_bgcolor="rgba(0,0,0,0)",
                 paper_bgcolor="rgba(0,0,0,0)",
             )
-            st.plotly_chart(fig4, use_container_width=True)
+            st.plotly_chart(fig4, width='stretch')
 
         with right:
             st.markdown("**Breakdown**")
@@ -192,6 +192,6 @@ with tab4:
             tbl["Share"] = (tbl["Value"] / total_val * 100).map("{:.1f}%".format)
             tbl["Value"] = tbl["Value"].map("${:,.2f}".format)
             st.dataframe(tbl[["Type", "Value", "Share"]],
-                         hide_index=True, use_container_width=True)
+                         hide_index=True, width='stretch')
     else:
         st.info("No portfolio data. Run **Sync Prices** first.")

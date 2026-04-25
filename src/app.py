@@ -3,11 +3,19 @@ import requests
 from dotenv import load_dotenv
 import os
 from PIL import Image
+from pathlib import Path
 import database
 import scheduler
 import processor
 
-# ── Update system (optional — gracefully disabled if updater.py missing) ──────
+# ── Paths --------------------------------------------------------------------
+# When launched via launcher.py the CWD is ROOT_DIR, so relative paths like
+# "data/..." all resolve correctly.  For absolute asset references we derive
+# ROOT_DIR from this file's location (src/app.py -> src/ -> root/).
+SRC_DIR  = Path(__file__).resolve().parent
+ROOT_DIR = SRC_DIR.parent
+
+# ── Update system (optional) -------------------------------------------------
 try:
     import updater as _updater
     _UPDATER_AVAILABLE = True
@@ -17,18 +25,15 @@ except ImportError:
 load_dotenv()
 API_KEY = os.getenv("CSFLOAT_API_KEY")
 
-# Ensure DB schema is present on every cold start before any page code runs
 database.init_db()
 
-img_icon = Image.open("assets/icon.png")
+img_icon = Image.open(ROOT_DIR / "assets" / "icon.png")
 st.set_page_config(page_title="CS2 SkInvest", layout="wide", page_icon=img_icon)
 
 st.markdown("""
 <style>
-/* Hide auto-generated sidebar nav */
 [data-testid="stSidebarNav"] { display: none !important; }
 
-/* Primary buttons: mint green with dark text — replaces default red/orange */
 .stButton > button[kind="primary"] {
     background-color: #0a7c6e !important;
     color: #ffffff !important;
@@ -41,8 +46,6 @@ st.markdown("""
 .stButton > button[kind="primary"]:active {
     background-color: #086358 !important;
 }
-
-/* Form submit buttons inherit the same style */
 .stFormSubmitButton > button {
     background-color: #0a7c6e !important;
     color: #ffffff !important;
@@ -74,7 +77,6 @@ def fetch_user_info():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_update_check() -> dict:
-    """Check GitHub for updates once per hour."""
     if not _UPDATER_AVAILABLE:
         return {}
     try:
@@ -84,7 +86,7 @@ def _cached_update_check() -> dict:
 
 
 with st.sidebar:
-    # ── 1. User info ──────────────────────────────────────────────────────────
+    # ── 1. User info ----------------------------------------------------------
     user = fetch_user_info()
     if user:
         username   = user.get("username", "—")
@@ -97,25 +99,25 @@ with st.sidebar:
         info_col, img_col = st.columns([3, 1])
         with info_col:
             st.markdown(
-                f"<div style='padding-top:6px'>"
-                f"<span style='font-size:1rem;font-weight:600'>{username}</span><br>"
-                f"<span style='font-size:0.72rem;color:gray'>{steam_id}</span>"
-                f"</div>",
+                "<div style='padding-top:6px'>"
+                "<span style='font-size:1rem;font-weight:600'>{}</span><br>"
+                "<span style='font-size:0.72rem;color:gray'>{}</span>"
+                "</div>".format(username, steam_id),
                 unsafe_allow_html=True,
             )
         with img_col:
             if avatar_url:
                 st.markdown(
-                    f"<div style='text-align:right;padding-top:4px'>"
-                    f"<img src='{avatar_url}' style='width:46px;height:46px;"
-                    f"border:2px solid white;border-radius:4px;object-fit:cover;'/>"
-                    f"</div>",
+                    "<div style='text-align:right;padding-top:4px'>"
+                    "<img src='{}' style='width:46px;height:46px;"
+                    "border:2px solid white;border-radius:4px;object-fit:cover;'/>"
+                    "</div>".format(avatar_url),
                     unsafe_allow_html=True,
                 )
 
     st.divider()
 
-    # ── 2. Navigation ─────────────────────────────────────────────────────────
+    # ── 2. Navigation --------------------------------------------------------
     st.page_link("pages/portfolio.py",    label="💼  Portfolio",    use_container_width=True)
     st.page_link("pages/charts.py",       label="📊  Charts",       use_container_width=True)
     st.page_link("pages/transactions.py", label="✏️  Transactions", use_container_width=True)
@@ -123,15 +125,15 @@ with st.sidebar:
 
     st.divider()
 
-    # ── 3. Controls (shared across all pages — no more per-page duplication) ──
+    # ── 3. Controls ----------------------------------------------------------
     st.markdown("**⚙️ Controls**")
 
     if st.button("📦 Sync Inventory", use_container_width=True,
                  help="Fetch new trades from CSFloat and rebuild inventory"):
-        with st.spinner("Fetching trades & rebuilding inventory…"):
+        with st.spinner("Fetching trades & rebuilding inventory..."):
             n = processor.sync_inventory()
             st.cache_data.clear()
-            st.success(f"Done — {n} active items")
+            st.success("Done -- {} active items".format(n))
             st.rerun()
 
     if st.button("💰 Sync Prices", use_container_width=True,
@@ -142,12 +144,12 @@ with st.sidebar:
 
     inv_sync   = database.meta_get("last_inventory_sync")
     price_sync = database.meta_get("last_price_sync")
-    st.caption(f"Inventory: **{inv_sync or 'never'}**")
-    st.caption(f"Prices: **{price_sync or 'never'}**")
+    st.caption("Inventory: **{}**".format(inv_sync or "never"))
+    st.caption("Prices: **{}**".format(price_sync or "never"))
 
     st.divider()
 
-    # ── 4. Auto-sync status ───────────────────────────────────────────────────
+    # ── 4. Auto-sync status --------------------------------------------------
     task      = scheduler.get_task_status()
     last_auto = database.meta_get("last_auto_sync")
     if task["exists"] and task["enabled"]:
@@ -156,8 +158,9 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
         st.caption(
-            f"Last auto: **{last_auto or 'never'}**  \n"
-            f"Next: **{task['next_run'] or '—'}**"
+            "Last auto: **{}**  \nNext: **{}**".format(
+                last_auto or "never", task["next_run"] or "—"
+            )
         )
     else:
         st.markdown(
@@ -168,9 +171,9 @@ with st.sidebar:
 
     st.divider()
 
-    # ── 5. Version & update ───────────────────────────────────────────────────
+    # ── 5. Version & update --------------------------------------------------
     local_ver = _updater.get_local_version() if _UPDATER_AVAILABLE else "—"
-    st.caption(f"Version: **{local_ver}**")
+    st.caption("Version: **{}**".format(local_ver))
 
     if _UPDATER_AVAILABLE:
         update_info = _cached_update_check()
@@ -178,42 +181,40 @@ with st.sidebar:
         if update_info.get("update_available"):
             latest = update_info["latest_version"]
             st.markdown(
-                f"<span style='color:#f4a261;font-size:0.82rem'>"
-                f"🔄 Update available: v{latest}</span>",
+                "<span style='color:#f4a261;font-size:0.82rem'>"
+                "🔄 Update available: v{}</span>".format(latest),
                 unsafe_allow_html=True,
             )
 
-            # Show release notes in an expander
             notes = update_info.get("release_notes")
             if notes:
                 with st.expander("What's new"):
                     st.markdown(notes[:800])
 
-            if st.button(f"⬇️ Download v{latest}", use_container_width=True,
-                         help="Download update (applied on next app restart)"):
-                prog_bar = st.progress(0.0, text="Preparing…")
+            if st.button("⬇️ Download v{}".format(latest), use_container_width=True,
+                         help="Downloads update; applied on next app restart"):
+                prog_bar = st.progress(0.0, text="Preparing...")
 
                 def _prog(pct, msg):
                     prog_bar.progress(min(pct, 1.0), text=msg[:80])
 
                 success, msg = _updater.download_update(update_info, progress_cb=_prog)
                 if success:
-                    prog_bar.progress(1.0, text="✅ Download complete!")
+                    prog_bar.progress(1.0, text="Download complete!")
                     st.success(
-                        f"v{latest} is ready.  \n"
-                        "Close and re-open the app to apply the update."
+                        "v{} is ready.  \n"
+                        "Close and re-open the app to apply the update.".format(latest)
                     )
                     st.cache_data.clear()
                 else:
                     prog_bar.empty()
-                    st.error(f"Download failed: {msg}")
+                    st.error("Download failed: {}".format(msg))
 
-        elif update_info.get("error") and "not configured" not in update_info["error"]:
-            # Only show network/API errors (not the "not configured" placeholder)
+        elif update_info.get("error") and "not configured" not in str(update_info.get("error", "")):
             st.caption("_(update check failed)_")
 
 
-# ── Page registration ─────────────────────────────────────────────────────────
+# ── Page registration --------------------------------------------------------
 portfolio_page    = st.Page("pages/portfolio.py",    title="Portfolio",    icon="💼")
 charts_page       = st.Page("pages/charts.py",       title="Charts",       icon="📊")
 transactions_page = st.Page("pages/transactions.py", title="Transactions", icon="✏️")
