@@ -226,6 +226,14 @@ with st.sidebar:
         elif update_info.get("error") and "not configured" not in str(update_info.get("error", "")):
             st.caption("_(update check failed)_")
 
+    # ── 6. Bug report ----------------------------------------------------------
+    st.markdown(
+        "<a href='https://github.com/JanZlatnik/CS2Skinvest/issues/new' "
+        "target='_blank' style='font-size:0.78rem;color:#888;text-decoration:none;'>"
+        "🐛 Report a bug</a>",
+        unsafe_allow_html=True,
+    )
+
 
 # ── Run the current page ------------------------------------------------------
 pg.run()
