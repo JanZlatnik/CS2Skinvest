@@ -9,9 +9,6 @@ import scheduler
 import processor
 
 # ── Paths --------------------------------------------------------------------
-# When launched via launcher.py the CWD is ROOT_DIR, so relative paths like
-# "data/..." all resolve correctly.  For absolute asset references we derive
-# ROOT_DIR from this file's location (src/app.py -> src/ -> root/).
 SRC_DIR  = Path(__file__).resolve().parent
 ROOT_DIR = SRC_DIR.parent
 
@@ -56,6 +53,22 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
+
+
+# ── Page registration FIRST -- must happen before any st.page_link() call ----
+# st.page_link() looks up pages in the navigation registry. If st.navigation()
+# hasn't been called yet the registry is empty and a KeyError: 'url_pathname'
+# is raised on reload / re-open. Defining pages and calling st.navigation()
+# here ensures the registry is populated before the sidebar renders.
+portfolio_page    = st.Page("pages/portfolio.py",    title="Portfolio",    icon="💼")
+charts_page       = st.Page("pages/charts.py",       title="Charts",       icon="📊")
+transactions_page = st.Page("pages/transactions.py", title="Transactions", icon="✏️")
+sync_page         = st.Page("pages/sync_page.py",    title="Sync Prices",  icon="💰")
+sync_history_page = st.Page("pages/sync_history.py", title="Sync History", icon="🕘")
+
+pg = st.navigation(
+    [portfolio_page, charts_page, transactions_page, sync_page, sync_history_page]
+)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -117,11 +130,11 @@ with st.sidebar:
 
     st.divider()
 
-    # ── 2. Navigation --------------------------------------------------------
-    st.page_link("pages/portfolio.py",    label="💼  Portfolio",    use_container_width=True)
-    st.page_link("pages/charts.py",       label="📊  Charts",       use_container_width=True)
-    st.page_link("pages/transactions.py", label="✏️  Transactions", use_container_width=True)
-    st.page_link("pages/sync_history.py", label="🕘  Sync History", use_container_width=True)
+    # ── 2. Navigation -- pass Page objects directly, never string paths -------
+    st.page_link(portfolio_page,    label="Portfolio",    use_container_width=True)
+    st.page_link(charts_page,       label="Charts",       use_container_width=True)
+    st.page_link(transactions_page, label="Transactions", use_container_width=True)
+    st.page_link(sync_history_page, label="Sync History", use_container_width=True)
 
     st.divider()
 
@@ -138,7 +151,7 @@ with st.sidebar:
 
     if st.button("💰 Sync Prices", use_container_width=True,
                  help="Fetch latest prices from CSFloat & Steam"):
-        st.switch_page("pages/sync_page.py")
+        st.switch_page(sync_page)   # Page object, not string
 
     st.divider()
 
@@ -214,13 +227,5 @@ with st.sidebar:
             st.caption("_(update check failed)_")
 
 
-# ── Page registration --------------------------------------------------------
-portfolio_page    = st.Page("pages/portfolio.py",    title="Portfolio",    icon="💼")
-charts_page       = st.Page("pages/charts.py",       title="Charts",       icon="📊")
-transactions_page = st.Page("pages/transactions.py", title="Transactions", icon="✏️")
-sync_page         = st.Page("pages/sync_page.py",    title="Sync Prices",  icon="💰")
-sync_history_page = st.Page("pages/sync_history.py", title="Sync History", icon="🕘")
-
-pg = st.navigation([portfolio_page, charts_page, transactions_page,
-                    sync_page, sync_history_page])
+# ── Run the current page ------------------------------------------------------
 pg.run()

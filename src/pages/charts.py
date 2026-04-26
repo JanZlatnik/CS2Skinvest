@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-import src.processor as processor, src.database as database
+import processor
+import database
 
 st.title("📊 Charts & Analytics")
 
@@ -20,7 +21,7 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🥧 Distribution",
 ])
 
-CHART_HEIGHT = 520
+CHART_HEIGHT = 800
 
 # ── Tab 1 · Portfolio value over time ─────────────────────────────────────────
 with tab1:
@@ -42,12 +43,12 @@ with tab1:
         fig.add_trace(go.Scatter(
             x=ph["timestamp"], y=ph[val_col],
             name=f"Value ({src2})", fill="tozeroy",
-            line=dict(color=color, width=2),
+            line=dict(color=color, width=2, shape="spline"),
             hovertemplate="%{x|%Y-%m-%d}<br>$%{y:,.2f}<extra></extra>",
         ))
         fig.add_trace(go.Scatter(
             x=ph["timestamp"], y=ph["total_cost"],
-            name="Cost", line=dict(color="#f4a261", width=2, dash="dash"),
+            name="Cost", line=dict(color="#f4a261", width=2, dash="dash", shape="spline"),
             hovertemplate="%{x|%Y-%m-%d}<br>Cost: $%{y:,.2f}<extra></extra>",
         ))
         fig.update_layout(
@@ -57,6 +58,19 @@ with tab1:
             height=CHART_HEIGHT,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+        )
+        fig.update_xaxes(
+            rangeselector=dict(
+                buttons=[
+                    dict(count=7,  label="1W",  step="day",   stepmode="backward"),
+                    dict(count=1,  label="1M",  step="month", stepmode="backward"),
+                    dict(count=3,  label="3M",  step="month", stepmode="backward"),
+                    dict(count=1,  label="YTD", step="year",  stepmode="todate"),
+                    dict(count=1,  label="1Y",  step="year",  stepmode="backward"),
+                    dict(step="all", label="All"),
+                ]
+            ),
+            rangeslider=dict(visible=False), 
         )
         st.plotly_chart(fig, width='stretch')
         if not has_steam_hist:
@@ -97,7 +111,7 @@ with tab2:
                 x=history["timestamp"], y=history["price_usd"],
                 mode="lines+markers",
                 name=f"{src} floor",
-                line=dict(color="#00b4d8" if src == "CSFloat" else "#4c9be8", width=2),
+                line=dict(color="#00b4d8" if src == "CSFloat" else "#4c9be8", width=2, shape="spline"),
                 marker=dict(size=5),
                 hovertemplate="%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
             ))
@@ -113,6 +127,19 @@ with tab2:
                 hovermode="x unified",
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             )
+            fig2.update_xaxes(
+            rangeselector=dict(
+                buttons=[
+                    dict(count=7,  label="1W",  step="day",   stepmode="backward"),
+                    dict(count=1,  label="1M",  step="month", stepmode="backward"),
+                    dict(count=3,  label="3M",  step="month", stepmode="backward"),
+                    dict(count=1,  label="YTD", step="year",  stepmode="todate"),
+                    dict(count=1,  label="1Y",  step="year",  stepmode="backward"),
+                    dict(step="all", label="All"),
+                ]
+            ),
+            rangeslider=dict(visible=False), 
+        )
             st.plotly_chart(fig2, width='stretch')
         else:
             tip = "Run **Sync Prices**." if src == "CSFloat" else "No Steam data yet — run **Sync Prices**."
@@ -134,6 +161,15 @@ with tab3:
         pl = pl.sort_values("cf_pnl")
         pl["color"] = pl["cf_pnl"].apply(lambda x: "#ef476f" if x < 0 else "#06d6a0")
 
+        type_options = ["All"] + sorted(portfolio["item_type"].dropna().unique().tolist())
+        sel_type = st.selectbox("Filter by type", type_options, key="pl_type_filter")
+        if sel_type != "All":
+            pl = pl[portfolio["item_type"] == sel_type]
+
+        MAX_VISIBLE = 20 
+        row_height  = 38
+        fixed_height = min(max(CHART_HEIGHT, len(pl) * row_height),MAX_VISIBLE * row_height + 80)  # +80 for title/margins
+
         fig3 = go.Figure(go.Bar(
             x=pl["cf_pnl"], y=pl["label"], orientation="h",
             marker_color=pl["color"],
@@ -142,8 +178,13 @@ with tab3:
         fig3.update_layout(
             title="Unrealized P&L per item  (CSFloat prices)",
             xaxis_title="P&L (USD)", yaxis_title=None,
-            height=max(CHART_HEIGHT, len(pl) * 38),
+            height=fixed_height,
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
+            yaxis=dict(
+                range=[len(pl) - MAX_VISIBLE - 0.5, len(pl) - 0.5], 
+                fixedrange=False, 
+            ),
+            xaxis=dict(fixedrange=True), 
         )
         st.plotly_chart(fig3, width='stretch')
     else:
@@ -172,15 +213,15 @@ with tab4:
                 color_discrete_sequence=px.colors.qualitative.Set2,
             )
             fig4.update_traces(
-                textposition="inside",
-                textinfo="percent+label",
-                hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>",
+                textfont=dict(size=15, family="Arial Black"), 
+
+                textfont_size=14,
             )
             fig4.update_layout(
                 showlegend=True,
-                legend=dict(orientation="v", x=1.02, y=0.5),
+                legend=dict(orientation="v", x=0.0, y=0.0),
                 margin=dict(t=40, b=10, l=10, r=10),
-                height=440,
+                height=CHART_HEIGHT,
                 plot_bgcolor="rgba(0,0,0,0)",
                 paper_bgcolor="rgba(0,0,0,0)",
             )

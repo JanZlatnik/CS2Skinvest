@@ -3,8 +3,8 @@ import pandas as pd
 import requests
 import os
 from datetime import date as date_type
-import src.processor as processor
-import src.database as database
+import processor
+import database
 
 MANUAL_CSV = "data/manual_ledger.csv"
 CAT_MAP    = {"Normal": 1, "StatTrak™": 2, "Souvenir": 3}

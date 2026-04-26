@@ -405,19 +405,29 @@ def get_items_unpriced_today() -> set[str]:
     return {r[0] for r in rows}
 
 
-def get_yesterday_portfolio_value() -> tuple[float, float]:
+def get_last_two_snapshots() -> tuple[dict | None, dict | None]:
     """
-    Return (cf_value, total_cost) from the most recent portfolio snapshot
-    that is strictly before today. Used for daily P&L delta on portfolio page.
-    Returns (0.0, 0.0) if no prior snapshot exists.
+    Return the two most recent portfolio snapshots ordered by timestamp DESC.
+    Each snapshot is a dict with keys: cf_value, steam_value, total_cost, timestamp.
+    Returns (latest, previous) -- either can be None if not enough snapshots exist.
+    Always sorts by timestamp, never by id (id order is unreliable).
     """
-    today = date.today().isoformat()
     with get_conn() as conn:
-        row = conn.execute("""
-            SELECT cf_value, total_cost FROM portfolio_snapshots
-            WHERE substr(timestamp,1,10) < ?
-            ORDER BY timestamp DESC LIMIT 1
-        """, (today,)).fetchone()
-    if row:
-        return float(row[0]), float(row[1])
-    return 0.0, 0.0
+        rows = conn.execute("""
+            SELECT cf_value, steam_value, total_cost, timestamp
+            FROM portfolio_snapshots
+            ORDER BY timestamp DESC
+            LIMIT 2
+        """).fetchall()
+
+    def _to_dict(row) -> dict:
+        return {
+            "cf_value":    float(row[0]),
+            "steam_value": float(row[1]),
+            "total_cost":  float(row[2]),
+            "timestamp":   row[3],
+        }
+
+    latest   = _to_dict(rows[0]) if len(rows) >= 1 else None
+    previous = _to_dict(rows[1]) if len(rows) >= 2 else None
+    return latest, previous

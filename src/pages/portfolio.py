@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import src.processor as processor
-import src.database as database
+import processor
+import database
 
 CAT_MAP = {1: "Normal", 2: "StatTrak™", 3: "Souvenir"}
 
@@ -62,14 +62,16 @@ cf_pnl      = portfolio["cf_pnl"].sum()
 pnl_pct     = (cf_pnl / cost_total * 100) if cost_total else 0.0
 has_steam   = portfolio["steam_price"].gt(0).any()
 
-yest_cf_val, yest_cost = database.get_yesterday_portfolio_value()
-if yest_cf_val > 0:
-    yest_pnl     = yest_cf_val - yest_cost
-    delta_pnl    = cf_pnl - yest_pnl
-    yest_pct     = (yest_pnl / yest_cost * 100) if yest_cost else 0.0
-    delta_pct    = pnl_pct - yest_pct
-    delta_pnl_str = f"{delta_pnl:+,.2f} vs yesterday"
-    delta_pct_str = f"{delta_pct:+.1f}% vs yesterday"
+snap_new, snap_old = database.get_last_two_snapshots()
+if snap_new is not None and snap_old is not None:
+    pnl_new       = snap_new["cf_value"] - snap_new["total_cost"]
+    pnl_old       = snap_old["cf_value"] - snap_old["total_cost"]
+    delta_pnl     = pnl_new - pnl_old
+    pct_new       = (snap_new["cf_value"] / snap_new["total_cost"] - 1) * 100 if snap_new["total_cost"] else 0.0
+    pct_old       = (snap_old["cf_value"] / snap_old["total_cost"] - 1) * 100 if snap_old["total_cost"] else 0.0
+    delta_pct     = pct_new - pct_old
+    delta_pnl_str = f"{delta_pnl:+,.2f}$"
+    delta_pct_str = f"{delta_pct:+.1f}%"
 else:
     delta_pnl_str = None
     delta_pct_str = None

@@ -6,8 +6,8 @@ import streamlit as st
 import pandas as pd
 import threading
 import queue
-import src.processor as processor
-import src.database as database
+import processor
+import database
 
 st.title("💰 Sync Prices")
 

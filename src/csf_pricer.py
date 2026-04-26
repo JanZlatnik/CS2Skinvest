@@ -38,7 +38,7 @@ import os
 import time
 import requests
 from dotenv import load_dotenv
-import src.database as database
+import database
 
 load_dotenv()
 API_KEY  = os.getenv("CSFLOAT_API_KEY")

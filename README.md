@@ -163,11 +163,25 @@ The `data/` folder and `.env` file are **never synced to GitHub** — all your p
 
 ## Changelog
 
-### v1.0.1 — 2025-04-26
+### v1.0.3 — 2026-04-26
+- Fixed auto-update check failing when repo has tags but no formal GitHub Releases
+- Fixed portfolio delta showing 0 — now compares the two most recent snapshots
+  by timestamp instead of mixing live portfolio data with snapshot data
+- Fixed `KeyError: url_pathname` crash when reopening the app after closing the browser
+- Fixed doubled icons in sidebar navigation
+- Added item type filter to the P&L bar chart tab
+- P&L chart now supports scrolling when item count exceeds the visible window
+- Auto-sync exit code 2 traced to missing `src.` import prefix — fixed across all modules
+
+### v1.0.2 — 2026-04-26
+- README.md added
+- Minor UI tweaks across pages
+
+### v1.0.1 — 2026-04-25
 - Removed the distribution chart tab from the Portfolio page
 - Minor UI tweaks across pages
 
-### v1.0.0 — 2025-04-20
+### v1.0.0 — 2026-04-25
 - Initial public release
 - Full CSFloat trade history import
 - CSFloat and Steam floor price syncing with float- and pattern-aware lookups
