@@ -163,6 +163,9 @@ The `data/` folder and `.env` file are **never synced to GitHub** — all your p
 
 ## Changelog
 
+### v1.0.4 — 2026-04-26
+- Added "Report a bug" link in the sidebar pointing to GitHub Issues
+
 ### v1.0.3 — 2026-04-26
 - Fixed auto-update check failing when repo has tags but no formal GitHub Releases
 - Fixed portfolio delta showing 0 — now compares the two most recent snapshots
