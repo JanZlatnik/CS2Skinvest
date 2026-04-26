@@ -3,41 +3,44 @@ updater.py
 ----------
 GitHub-based auto-update system for CS2 SkInvest.
 
-Flow
-----
-  check_for_update()    -> dict   (call from sidebar; cache 1 h)
-  download_update(info) -> bool   (call when user clicks Update)
-  apply_pending()       -> bool   (call from launcher.py at startup)
+Version detection strategy
+--------------------------
+1. Try /releases/latest  (works when you publish a formal GitHub Release)
+2. If no releases exist (404), fall back to /tags  (works with plain git tags)
+
+This means the update check works as soon as you push a tag -- you do NOT
+need to create a formal GitHub Release first.
+
+To release a new version
+------------------------
+  1. Bump version.txt  (e.g. "1.1.0")
+  2. Commit and push
+  3. Create a git tag:
+       git tag v1.1.0
+       git push origin v1.1.0
+  That's it. The app will detect the new tag automatically.
+
+  Optionally, also create a GitHub Release from that tag to get
+  release notes shown in the sidebar.
 
 Staged update (Windows-safe)
 -----------------------------
-Running files cannot be replaced on Windows while in use, so updates
-are staged:
-  1. download_update() saves the GitHub release zip to
-       data/_pending_update/<files>
-     and writes a flag file  data/_update_ready.txt  with the new version.
+Files cannot be replaced while Python is running them on Windows, so
+updates are staged:
+  1. download_update() downloads the zip to data/_pending_update/
+     and writes data/_update_ready.txt with the new version.
   2. apply_pending() is called by launcher.py BEFORE Streamlit starts.
-     It copies staged files over, removes the staging dir, and deletes
-     the flag.  Streamlit then loads the fresh code.
+     It copies staged files over, removes staging dir, deletes the flag.
 
-Protected paths (never overwritten)
--------------------------------------
-  data/          - all user data
-  .env           - API keys
+Protected paths (never overwritten by an update)
+--------------------------------------------------
+  data/       - all user data
+  .env        - API key
   .gitignore
 
-GitHub repo setup
------------------
-  1. Push code to a public GitHub repo.
-  2. Set GITHUB_OWNER and GITHUB_REPO below.
-  3. To release a new version:
-       a. Bump version.txt to e.g. "1.2.3"
-       b. Commit and push
-       c. Create a GitHub Release with tag "v1.2.3"
-          (GitHub auto-generates the source zip)
+Git is NOT required -- updates are plain zip downloads over HTTPS.
 """
 
-import os
 import shutil
 import zipfile
 import requests
@@ -51,11 +54,14 @@ DATA_DIR     = ROOT_DIR / "data"
 PENDING_DIR  = DATA_DIR / "_pending_update"
 READY_FLAG   = DATA_DIR / "_update_ready.txt"
 
-# !! Edit these to match your GitHub repository !!
+# !! Set these to your GitHub repo !!
 GITHUB_OWNER = "JanZlatnik"
 GITHUB_REPO  = "CS2Skinvest"
 
 PROTECTED = {"data", ".env", ".gitignore"}
+
+_API_BASE = "https://api.github.com/repos/{}/{}".format(GITHUB_OWNER, GITHUB_REPO)
+_HEADERS  = {"Accept": "application/vnd.github.v3+json"}
 
 
 # ── Version helpers -----------------------------------------------------------
@@ -66,18 +72,65 @@ def get_local_version() -> str:
     return "0.0.0"
 
 
-def _ver_tuple(v: str):
+def _ver_tuple(v: str) -> tuple:
     try:
         return tuple(int(x) for x in v.lstrip("v").split("."))
     except Exception:
         return (0, 0, 0)
 
 
-# ── Remote check -------------------------------------------------------------
+# ── Remote version check ------------------------------------------------------
+
+def _check_releases(timeout: int) -> dict | None:
+    """
+    Try the /releases/latest endpoint.
+    Returns a partial result dict, or None if no releases exist.
+    """
+    r = requests.get(
+        "{}/releases/latest".format(_API_BASE),
+        headers=_HEADERS, timeout=timeout,
+    )
+    if r.status_code == 404:
+        return None   # no releases -- caller should try tags
+    r.raise_for_status()
+    data = r.json()
+    tag  = data.get("tag_name", "").lstrip("v")
+    return {
+        "latest_version": tag,
+        "download_url":   data.get("zipball_url"),
+        "release_notes":  data.get("body") or None,
+    }
+
+
+def _check_tags(timeout: int) -> dict | None:
+    """
+    Fall back to the /tags endpoint.
+    Returns a partial result dict, or None if no tags exist.
+    """
+    r = requests.get(
+        "{}/tags".format(_API_BASE),
+        headers=_HEADERS, timeout=timeout,
+    )
+    r.raise_for_status()
+    tags = r.json()
+    if not tags:
+        return None
+    # tags are returned newest-first
+    tag = tags[0]["name"].lstrip("v")
+    # Build a zipball URL from the tag name (GitHub generates these automatically)
+    zipball = "https://api.github.com/repos/{}/{}/zipball/v{}".format(
+        GITHUB_OWNER, GITHUB_REPO, tag
+    )
+    return {
+        "latest_version": tag,
+        "download_url":   zipball,
+        "release_notes":  None,   # tags have no release notes
+    }
+
 
 def check_for_update(timeout: int = 6) -> dict:
     """
-    Query GitHub releases/latest.
+    Query GitHub for the latest version.
 
     Returns dict with keys:
       update_available, local_version, latest_version,
@@ -93,44 +146,32 @@ def check_for_update(timeout: int = 6) -> dict:
         "error":            None,
     }
 
-    if GITHUB_OWNER == "your-github-username":
-        return {**base, "error": "GitHub repo not configured in updater.py"}
-
     try:
-        url = "https://api.github.com/repos/{}/{}/releases/latest".format(
-            GITHUB_OWNER, GITHUB_REPO
-        )
-        r = requests.get(
-            url, timeout=timeout,
-            headers={"Accept": "application/vnd.github.v3+json"},
-        )
-        if r.status_code == 404:
-            return {**base, "error": "No releases found on GitHub"}
-        r.raise_for_status()
+        info = _check_releases(timeout)
+        if info is None:
+            info = _check_tags(timeout)
+        if info is None:
+            return {**base, "error": "No releases or tags found on GitHub."}
 
-        data        = r.json()
-        latest_tag  = data.get("tag_name", "0.0.0").lstrip("v")
-        notes       = data.get("body", "")
-        zipball_url = data.get("zipball_url")
-
+        latest = info["latest_version"]
         return {
-            "update_available": _ver_tuple(latest_tag) > _ver_tuple(local),
+            "update_available": _ver_tuple(latest) > _ver_tuple(local),
             "local_version":    local,
-            "latest_version":   latest_tag,
-            "download_url":     zipball_url,
-            "release_notes":    notes or None,
+            "latest_version":   latest,
+            "download_url":     info["download_url"],
+            "release_notes":    info["release_notes"],
             "error":            None,
         }
     except Exception as exc:
         return {**base, "error": str(exc)}
 
 
-# ── Download (stage) ---------------------------------------------------------
+# ── Download (stage) ----------------------------------------------------------
 
 def download_update(info: dict, progress_cb=None) -> tuple:
     """
-    Download and stage the update.
-    Does NOT replace any running files.
+    Download and stage the update zip.
+    Does NOT overwrite any running files.
     Returns (success: bool, message: str).
     """
     url = info.get("download_url")
@@ -144,7 +185,7 @@ def download_update(info: dict, progress_cb=None) -> tuple:
     try:
         _prog(0.05, "Connecting to GitHub...")
 
-        r = requests.get(url, stream=True, timeout=60)
+        r = requests.get(url, stream=True, timeout=60, headers=_HEADERS)
         r.raise_for_status()
 
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -171,7 +212,7 @@ def download_update(info: dict, progress_cb=None) -> tuple:
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(extract_tmp)
 
-        # GitHub zips contain exactly one top-level folder: "owner-repo-<sha>/"
+        # GitHub zips have exactly one top-level folder: "owner-repo-<sha>/"
         subdirs = [p for p in extract_tmp.iterdir() if p.is_dir()]
         src_dir = subdirs[0] if len(subdirs) == 1 else extract_tmp
 
@@ -196,12 +237,12 @@ def download_update(info: dict, progress_cb=None) -> tuple:
         return False, "Download failed: {}".format(exc)
 
 
-# ── Apply pending (called by launcher before Streamlit starts) ---------------
+# ── Apply pending (called by launcher before Streamlit starts) ----------------
 
 def apply_pending() -> tuple:
     """
-    If staged update exists, apply it now.
-    Safe to call on every launch -- no-op when nothing is pending.
+    If a staged update exists, apply it now (before Streamlit starts).
+    Safe to call on every launch -- no-op if nothing is pending.
     Returns (applied: bool, message: str).
     """
     if not READY_FLAG.exists():
@@ -226,7 +267,7 @@ def apply_pending() -> tuple:
 # ── Internal helpers ----------------------------------------------------------
 
 def _copy_tree(src: Path, dst: Path):
-    """Recursively copy src -> dst, skipping protected top-level paths."""
+    """Recursively copy src -> dst, skipping protected top-level names."""
     for item in src.iterdir():
         if item.name in PROTECTED:
             continue

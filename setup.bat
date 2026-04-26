@@ -42,7 +42,7 @@ if !errorlevel! == 0 (
     winget install --id Python.Python.3.12 --source winget --accept-package-agreements --accept-source-agreements
     echo.
 
-    :: Refresh PATH so newly installed python is visible in this session
+    :: Refresh PATH so the newly installed python is visible in this session
     for /f "tokens=2*" %%A in ('reg query "HKCU\Environment" /v PATH 2^>nul') do set "USERPATH=%%B"
     for /f "tokens=2*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v PATH 2^>nul') do set "SYSPATH=%%B"
     set "PATH=%SYSPATH%;%USERPATH%"
@@ -82,12 +82,16 @@ echo   Found Python:
 %PYTHON% --version
 echo.
 
-:: --- Check minimum version (3.9) ---------------------------------------------
-%PYTHON% -c "import sys; sys.exit(0 if sys.version_info >= (3,9) else 1)" >nul 2>&1
+:: --- Check minimum version (3.10) --------------------------------------------
+:: The app uses X | Y type hint syntax which requires Python 3.10+
+%PYTHON% -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" >nul 2>&1
 if !errorlevel! neq 0 (
-    echo   ERROR: Python 3.9 or later is required.
+    echo   ERROR: Python 3.10 or later is required.
     echo   Your version is too old. Please install a newer Python from:
     echo   https://www.python.org/downloads/
+    echo.
+    echo   During install, tick "Add Python to PATH" at the bottom
+    echo   of the first installer screen.
     echo.
     pause
     exit /b 1
@@ -98,7 +102,6 @@ echo.
 echo   Running installer...
 echo.
 
-:: installer.py lives in src\
 %PYTHON% src\installer.py
 
 echo.
