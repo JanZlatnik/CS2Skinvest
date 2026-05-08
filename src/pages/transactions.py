@@ -39,10 +39,14 @@ def get_rate_on_date(from_currency: str, to_currency: str = "USD",
     if from_currency == to_currency:
         return 1.0
     try:
+        # Frankfurter API — stable public endpoint, no API key required.
+        # Historical:  GET /2023-01-15?base=EUR&to=USD
+        # Latest:      GET /latest?base=EUR&to=USD
+        # Correct param is "to", NOT "quotes" (common mistake with older docs).
         endpoint = "latest" if on_date is None else on_date
         r = requests.get(
-            f"https://api.frankfurter.dev/v2/{endpoint}",
-            params={"base": from_currency, "quotes": to_currency},
+            f"https://api.frankfurter.app/{endpoint}",
+            params={"base": from_currency, "to": to_currency},
             timeout=5,
         )
         if r.status_code == 200:
@@ -526,7 +530,7 @@ All prices in the CSV must be in **USD**. Convert manually before importing if n
 | Column | Example | Notes |
 |---|---|---|
 | `Date` | `2024-03-15` | required |
-| `Item_Name` | `AK-47 | Redline (Field-Tested)` | required, exact Steam market hash name |
+| `Item_Name` | `AK-47 \| Redline (Field-Tested)` | required, exact Steam market hash name |
 | `Action` | `Buy` | required — Buy or Sell |
 | `Quantity` | `1` | required, negative = sell |
 | `Price_USD` | `14.50` | required, in USD |

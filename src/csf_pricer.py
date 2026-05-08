@@ -128,7 +128,13 @@ def _fetch_lowest(params: dict) -> float | None:
 
 
 # ── Result codes (used by sync_page for display) ─────────────────────────────
-# "basic" | "float" | "seed" | "seed_float" | "stale" | "no_price"
+# "basic"      — non-skin/charm floor (correct/only method for those types)
+# "imprecise"  — Skin/Knife fell back to global floor (float or seed match skipped)
+# "float"      — float-narrowed price
+# "seed"       — paint-seed-matched price
+# "seed_float" — paint-seed + float-narrowed price
+# "stale"      — carried forward from a previous sync
+# "no_price"   — no listing found at all
 
 # ── Public fetch function ─────────────────────────────────────────────────────
 
@@ -215,23 +221,26 @@ def fetch_cf_price(item: dict) -> tuple[float, bool, str]:
                 if p2:
                     return p2, False, "seed_float"
             return p, False, "seed"
-        # Seed search found nothing — fall back to basic
+        # Seed search found nothing — fall back to global wear floor.
+        # This is imprecise for a pattern-based skin.
         p = _fetch_lowest(base)
         if p:
-            return p, False, "basic"
+            return p, False, "imprecise"
     else:
-        # Standard skin
+        # Standard skin (or pattern-based skin without a recorded paint_seed).
         # Step 1: name only  (wear in market_hash_name)
         p = _fetch_lowest(base)
         if p:
-            # Step 2: add max_float
+            # Step 2: add max_float for a tighter price
             if float_val is not None:
                 _, w_hi = _wear_bounds(item.get("wear"))
                 max_f   = round(min(float_val, w_hi), 6)
                 p2 = _fetch_lowest({**base, "max_float": max_f})
                 if p2:
                     return p2, False, "float"
-            return p, False, "basic"
+            # No float data or float search empty — wear-level floor only.
+            # Mark as imprecise: the price exists but has no float/seed matching.
+            return p, False, "imprecise"
 
     last = _get_stale(item_key)
     return last, last > 0, "stale" if last > 0 else "no_price"

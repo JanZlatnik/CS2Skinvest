@@ -20,10 +20,11 @@ with tab_history:
 
     METHOD_LABELS = {
         "basic":      "🔍 Basic",
+        "imprecise":  "⚠️ Imprecise",
         "float":      "📐 + Float",
         "seed":       "🎨 Paint seed",
         "seed_float": "🎨📐 Seed + float",
-        "stale":      "⚠️ Last known",
+        "stale":      "♻️ Last known",
         "no_price":   "🔴 Not found",
     }
     TRIGGER_LABELS = {"manual": "👆 Manual", "auto": "🤖 Auto"}
@@ -66,23 +67,29 @@ with tab_history:
             if df.empty:
                 st.warning("No data found for this run.")
             else:
-                ok_n    = int(((df["cf_price"] > 0) & (df["stale"] == 0)).sum())
-                stale_n = int(df["stale"].sum())
-                miss_n  = int((df["cf_price"] == 0).sum())
-                steam_n = int((df["steam_price"] > 0).sum())
+                ok_n        = int(((df["cf_price"] > 0) & (df["stale"] == 0) & (df["method"] != "imprecise")).sum())
+                imprecise_n = int(((df["cf_price"] > 0) & (df["stale"] == 0) & (df["method"] == "imprecise")).sum())
+                stale_n     = int(df["stale"].sum())
+                miss_n      = int((df["cf_price"] == 0).sum())
+                steam_n     = int((df["steam_price"] > 0).sum())
 
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("✅ Priced",  ok_n)
-                m2.metric("⚠️ Stale",  stale_n)
-                m3.metric("🔴 Missing", miss_n)
-                m4.metric("🌐 Steam",  steam_n)
+                m1, m2, m3, m4, m5 = st.columns(5)
+                m1.metric("✅ Fresh",      ok_n)
+                m2.metric("⚠️ Imprecise", imprecise_n)
+                m3.metric("♻️ Stale",     stale_n)
+                m4.metric("🔴 Missing",   miss_n)
+                m5.metric("🌐 Steam",     steam_n)
 
                 st.divider()
 
                 display = df.copy()
                 display["Status"] = display.apply(
-                    lambda r: "⚠️ Stale"   if r["stale"]
-                              else ("🔴 Missing" if r["cf_price"] == 0 else "✅ OK"),
+                    lambda r: (
+                        "♻️ Stale"     if r["stale"]
+                        else "🔴 Missing"  if r["cf_price"] == 0
+                        else "⚠️ Imprecise" if r["method"] == "imprecise"
+                        else "✅ Fresh"
+                    ),
                     axis=1,
                 )
                 display["Method"]   = display["method"].map(METHOD_LABELS).fillna(display["method"])
@@ -98,7 +105,8 @@ with tab_history:
                 f1, f2 = st.columns(2)
                 with f1:
                     status_filter = st.selectbox(
-                        "Filter by status", ["All", "✅ OK", "⚠️ Stale", "🔴 Missing"]
+                        "Filter by status",
+                        ["All", "✅ Fresh", "⚠️ Imprecise", "♻️ Stale", "🔴 Missing"],
                     )
                 with f2:
                     search_term = st.text_input(
@@ -184,33 +192,61 @@ with tab_auto:
     cfg_left, _ = st.columns([2, 3])
 
     with cfg_left:
-        default_hour, default_minute = 6, 0
-        if status["run_time"] and ":" in status["run_time"]:
-            try:
-                h, m = status["run_time"].split(":")
-                default_hour, default_minute = int(h), int(m)
-            except ValueError:
-                pass
+        # ── Trigger mode selector ─────────────────────────────────────────
+        import database as _db
+        saved_mode = _db.meta_get("auto_sync_trigger_mode") or "daily"
+        mode_labels = list(scheduler.TRIGGER_MODES.values())
+        mode_keys   = list(scheduler.TRIGGER_MODES.keys())
+        default_idx = mode_keys.index(saved_mode) if saved_mode in mode_keys else 0
 
-        run_hour   = st.number_input("Hour (0–23)",   min_value=0, max_value=23,
-                                     value=default_hour,   step=1)
-        run_minute = st.number_input("Minute (0–59)", min_value=0, max_value=59,
-                                     value=default_minute, step=5)
-        run_time_str = f"{int(run_hour):02d}:{int(run_minute):02d}"
-        st.caption(f"Will run daily at **{run_time_str}**")
-        st.caption(
-            "⚡ If the computer is **off** at that time, the sync runs "
-            "automatically the **next time it starts up** — no missed days."
+        sel_mode_label = st.radio(
+            "Trigger mode",
+            mode_labels,
+            index=default_idx,
+            key="auto_sync_mode",
         )
+        sel_mode = mode_keys[mode_labels.index(sel_mode_label)]
 
+        # ── Time inputs (daily mode only) ─────────────────────────────────
+        run_time_str = "06:00"
+        if sel_mode == "daily":
+            default_hour, default_minute = 6, 0
+            if status["run_time"] and ":" in status["run_time"]:
+                try:
+                    h, m = status["run_time"].split(":")
+                    default_hour, default_minute = int(h), int(m)
+                except ValueError:
+                    pass
 
-        # ── Action buttons (aligned under the time inputs) ─────────────
+            run_hour   = st.number_input("Hour (0–23)",   min_value=0, max_value=23,
+                                         value=default_hour,   step=1)
+            run_minute = st.number_input("Minute (0–59)", min_value=0, max_value=59,
+                                         value=default_minute, step=5)
+            run_time_str = f"{int(run_hour):02d}:{int(run_minute):02d}"
+            st.caption(f"Will run daily at **{run_time_str}**")
+            st.caption(
+                "⚡ If the computer is **off** at that time, `StartWhenAvailable` "
+                "ensures the sync still runs on the **next startup**."
+            )
+        elif sel_mode == "logon":
+            st.caption(
+                "Runs **every time you log in** or the PC boots up.  \n"
+                "`auto_sync.py` skips the work if prices are already fresh today."
+            )
+        elif sel_mode == "hourly":
+            st.caption(
+                "Runs **every hour**. If prices were already fetched today the "
+                "script exits in under a second — no extra load."
+            )
+
+        # ── Action buttons ────────────────────────────────────────────────
         st.markdown("")
         if on_windows:
             btn_label = "✅ Enable Auto-Sync" if not status["exists"] else "🔄 Update Schedule"
             if st.button(btn_label, width='stretch', type="primary"):
-                ok, msg = scheduler.create_task(run_time_str)
+                ok, msg = scheduler.create_task(run_time_str, trigger_mode=sel_mode)
                 if ok:
+                    _db.meta_set("auto_sync_trigger_mode", sel_mode)
                     st.success(msg)
                     st.rerun()
                 else:
@@ -220,6 +256,7 @@ with tab_auto:
                          disabled=not status["exists"], type="secondary"):
                 ok, msg = scheduler.delete_task()
                 if ok:
+                    _db.meta_set("auto_sync_trigger_mode", "daily")
                     st.success(msg)
                     st.rerun()
                 else:
@@ -267,19 +304,23 @@ with tab_auto:
 **Auto-Sync** uses **Windows Task Scheduler** to run `auto_sync.py` silently
 in the background — no Streamlit window needed.
 
-**What it does:**
+**Trigger modes:**
+
+| Mode | When does it run? |
+|---|---|
+| **Daily at set time** | Once per day at your chosen hour. If the PC was off, `StartWhenAvailable` fires it on the next startup. |
+| **At every startup / login** | Runs every time you log in or boot. The script exits immediately if prices are already fresh today. |
+| **Every hour** | Checks every hour; skips work silently if today's prices are already synced. |
+
+**What it does each run:**
 - Fetches the latest CSFloat floor prices for every item in your inventory
 - Fetches Steam market prices
 - Saves everything to the database exactly like a manual Sync Prices run
 - Writes a detailed log to `data/auto_sync.log`
 - Records the run in **Sync History** with trigger = 🤖 Auto
 
-**Missed runs:**
-If your computer is off at the scheduled time, Windows runs the sync
-automatically the **next time you start the computer** — so you never skip a day.
-
-**Changing the time:**
-Adjust hour/minute above and click **Update Schedule**.
+**Changing the mode or time:**
+Select a new mode above and click **Update Schedule**.
 You can also edit it directly in Windows Task Scheduler (`taskschd.msc`)
 under the task name `CS2SkInvest_AutoSync`.
 

@@ -12,9 +12,10 @@
 - Tracks floor prices per item using smart float- and pattern-aware lookups
 - Dual pricing: CSFloat buy-now floors and Steam Community Market prices side by side
 - Portfolio overview with unrealised P&L, return %, and day-over-day delta
+- Realized P&L tracking for sold items
 - Price history charts per item and for the whole portfolio
-- Manual transaction ledger for off-platform purchases
-- Daily auto-sync via Windows Task Scheduler (set it once, forget it)
+- Manual transaction ledger for off-platform purchases with multi-currency support
+- Auto-sync via Windows Task Scheduler — three trigger modes: daily at a set time, at every login, or every hour
 - One-click updates from GitHub when a new version is available
 
 ---
@@ -44,17 +45,10 @@
 ### macOS / Linux
 
 ```bash
-# Clone the repo
 git clone https://github.com/JanZlatnik/CS2Skinvest.git
 cd CS2Skinvest
-
-# Install dependencies
 pip install -r requirements.txt
-
-# Run the installer to set up your API key
 python src/installer.py
-
-# Launch
 python src/launcher.py
 ```
 
@@ -90,7 +84,15 @@ Click **📦 Sync Inventory** in the sidebar. This fetches your complete CSFloat
 Click **💰 Sync Prices** in the sidebar, then click **▶ Sync Prices** on the page. This fetches the current floor price from CSFloat and the Steam Community Market for every item in your inventory. Depending on the size of your inventory, this can take several minutes due to API rate limiting.
 
 ### 3. (Optional) Set up Auto-Sync
-Go to **🕘 Sync History → Auto-Sync Setup**. Pick a time (e.g. 06:00) and click **Enable Auto-Sync**. From then on, prices are updated every day automatically in the background — no app window needed.
+Go to **🕘 Sync History → Auto-Sync Setup**. Choose a trigger mode and click **Enable Auto-Sync**:
+
+| Mode | When it runs |
+|------|-------------|
+| **Daily at set time** | Once per day at your chosen hour. If the PC was off at that time, the task runs automatically on the next startup. |
+| **At every startup / login** | Every time you log in or boot. The script exits immediately if prices are already fresh today. Best if you don't leave your PC on overnight. |
+| **Every hour** | Checks every hour; skips work silently if already synced today. |
+
+To verify the task is registered correctly: `Win + R` → `taskschd.msc` → Task Scheduler Library → **`CS2SkInvest_AutoSync`**.
 
 ---
 
@@ -98,10 +100,11 @@ Go to **🕘 Sync History → Auto-Sync Setup**. Pick a time (e.g. 06:00) and cl
 
 | Page | What it does |
 |------|-------------|
-| **💼 Portfolio** | Full inventory table with current prices, P&L, and return. Filterable by type, wear, and category. |
+| **💼 Portfolio** | Full inventory table with current prices, P&L, and return. Filterable by type, wear, and category.|
+| **💸 Realized P&L** | Sold-item tracker. Avg buy, avg sell, qty sold, cost, revenue, P&L, and return % for every item you have sold. |
 | **📊 Charts** | Portfolio value over time, per-item price history, P&L bar chart, and type distribution. |
-| **✏️ Transactions** | Manual transaction ledger for items purchased outside CSFloat. |
-| **🕘 Sync History** | Browse every past sync run and see per-item results. Also where you set up Auto-Sync. |
+| **✏️ Transactions** | Manual transaction ledger for items purchased or sold outside CSFloat. Supports multiple currencies with live exchange rates. |
+| **🕘 Sync History** | Browse every past sync run and see per-item results. Also where you configure Auto-Sync. |
 
 ---
 
@@ -138,8 +141,13 @@ CS2Skinvest/
     database.py       ← SQLite database layer
     processor.py      ← inventory and price processing
     csf_pricer.py     ← CSFloat pricing logic
-    transactions.py   ← transaction helpers
-    pages/            ← Streamlit page files
+    pages/
+      portfolio.py      ← Portfolio page
+      charts.py         ← Charts & Analytics page
+      realized_pnl.py   ← Realized P&L page
+      transactions.py   ← Transactions page
+      sync_page.py      ← Sync Prices page
+      sync_history.py   ← Sync History & Auto-Sync Setup page
   data/               ← created on first run, gitignored
     tracker.db        ← your portfolio database
     auto_sync.log     ← background sync log
@@ -163,13 +171,24 @@ The `data/` folder and `.env` file are **never synced to GitHub** — all your p
 
 ## Changelog
 
+### v1.1.0 — 2026-05-08
+- Added Realized P&L page — tracks sold items with avg buy, avg sell, P&L and return %
+- Auto-Sync now supports three trigger modes: daily at a set time, at every login, or every hour
+- Auto-Sync task now retries automatically on failure (3 attempts, 10 min apart)
+- Added Imprecise price status (⚠️) for items where no exact float or pattern match was found
+- Stale price indicator changed from ⚠️ to ♻️
+- Portfolio prices not updating after sync fixed
+- Exchange rate conversion in Transactions fixed
+- P&L chart in Charts scrolling fixed
+
+---
+
 ### v1.0.4 — 2026-04-26
 - Added "Report a bug" link in the sidebar pointing to GitHub Issues
 
 ### v1.0.3 — 2026-04-26
 - Fixed auto-update check failing when repo has tags but no formal GitHub Releases
-- Fixed portfolio delta showing 0 — now compares the two most recent snapshots
-  by timestamp instead of mixing live portfolio data with snapshot data
+- Fixed portfolio delta showing 0 — now compares the two most recent snapshots by timestamp instead of mixing live portfolio data with snapshot data
 - Fixed `KeyError: url_pathname` crash when reopening the app after closing the browser
 - Fixed doubled icons in sidebar navigation
 - Added item type filter to the P&L bar chart tab

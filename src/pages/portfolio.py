@@ -18,7 +18,7 @@ COL_CONFIG = {
     "cf_price":   st.column_config.NumberColumn("CSFloat", format="$%.2f",
                       help="Sortable CSFloat floor price in USD"),
     "csfs":       st.column_config.TextColumn("CSFS",
-                      help="✅ Fresh  ·  ⚠️ Stale (last known)  ·  🔴 No price"),
+                      help="✅ Fresh  ·  ⚠️ Imprecise (basic floor, no float/pattern match)  ·  ♻️ Stale (last known)  ·  🔴 No price"),
     "steam_price":st.column_config.NumberColumn("Steam",   format="$%.2f"),
     "total_cost": st.column_config.NumberColumn("Cost",    format="$%.2f"),
     "cf_value":   st.column_config.NumberColumn("Value",   format="$%.2f"),
@@ -33,10 +33,20 @@ DISPLAY_COLS = [
 
 
 def _csfs(row) -> str:
-    """Icon-only status indicator — keeps cf_price numeric and sortable."""
+    """
+    Status indicator for the CSFloat price column.
+
+    ✅  Fresh      — precise price (float / seed / seed_float), fetched today
+    ⚠️  Imprecise  — Skin/Knife fell back to global wear-floor (no float or
+                    pattern match); price is valid but treat with caution
+    ♻️  Stale      — carried forward from a previous sync
+    🔴  No price   — no listing found at all
+    """
     if row["cf_price"] == 0:
         return "🔴"
     if row.get("cf_stale", False):
+        return "♻️"
+    if row.get("cf_method", "") == "imprecise":
         return "⚠️"
     return "✅"
 
@@ -127,10 +137,16 @@ if True:  # keep indentation level consistent
                  use_container_width=True, hide_index=True, height=580)
 
     # Legend
-    stale_n   = int(portfolio.get("cf_stale", pd.Series(dtype=bool)).sum())
-    missing_n = int((portfolio["cf_price"] == 0).sum())
+    stale_n     = int(portfolio.get("cf_stale", pd.Series(dtype=bool)).sum())
+    missing_n   = int((portfolio["cf_price"] == 0).sum())
+    imprecise_n = int(
+        ((portfolio.get("cf_method", pd.Series(dtype=str)) == "imprecise") &
+         ~portfolio.get("cf_stale", pd.Series(False, index=portfolio.index)).astype(bool) &
+         (portfolio["cf_price"] > 0)).sum()
+    )
     parts = []
-    if stale_n:   parts.append(f"⚠️ {stale_n} stale")
-    if missing_n: parts.append(f"🔴 {missing_n} missing")
+    if imprecise_n: parts.append(f"⚠️ {imprecise_n} imprecise")
+    if stale_n:     parts.append(f"♻️ {stale_n} stale")
+    if missing_n:   parts.append(f"🔴 {missing_n} missing")
     legend = "  ·  ".join(parts) + "  ·  " if parts else ""
     st.caption(f"{legend}Showing {len(display)} of {len(portfolio)} items")

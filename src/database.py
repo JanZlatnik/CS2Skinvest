@@ -51,7 +51,8 @@ def init_db():
                 cf_price    REAL NOT NULL DEFAULT 0,
                 steam_price REAL NOT NULL DEFAULT 0,
                 timestamp   TEXT NOT NULL,
-                stale       INTEGER NOT NULL DEFAULT 0
+                stale       INTEGER NOT NULL DEFAULT 0,
+                method      TEXT NOT NULL DEFAULT ''
             )
         """)
         conn.execute("""
@@ -158,6 +159,8 @@ def migrate_db():
         cols = {r[1] for r in conn.execute("PRAGMA table_info(price_history)").fetchall()}
         if "stale" not in cols:
             conn.execute("ALTER TABLE price_history ADD COLUMN stale INTEGER NOT NULL DEFAULT 0")
+        if "method" not in cols:
+            conn.execute("ALTER TABLE price_history ADD COLUMN method TEXT NOT NULL DEFAULT ''")
 
         # sync_log: create if not present (for users upgrading from earlier versions)
         conn.execute("""
@@ -180,27 +183,41 @@ def migrate_db():
 
 
 def save_price_snapshot(item_key: str, cf_price: float, steam_price: float,
-                        timestamp: str = None, stale: bool = False):
+                        timestamp: str = None, stale: bool = False,
+                        method: str = ""):
     ts = timestamp or datetime.now().strftime("%Y-%m-%d %H:%M")
     with get_conn() as conn:
         conn.execute(
-            "INSERT INTO price_history (item_key, cf_price, steam_price, timestamp, stale) "
-            "VALUES (?,?,?,?,?)",
-            (item_key, cf_price, steam_price, ts, int(stale)),
+            "INSERT INTO price_history (item_key, cf_price, steam_price, timestamp, stale, method) "
+            "VALUES (?,?,?,?,?,?)",
+            (item_key, cf_price, steam_price, ts, int(stale), method),
         )
 
 
 def get_latest_prices() -> pd.DataFrame:
     """
-    Most recent cf_price, steam_price and stale flag per item_key.
-    Returns DataFrame with columns: item_key, cf_price, steam_price, cf_stale.
+    Most recent cf_price, steam_price, stale flag, and pricing method per item_key.
+    Returns DataFrame with columns: item_key, cf_price, steam_price, cf_stale, method.
+
+    NOTE: uses MAX(timestamp) not MAX(id).
+    compress_old_price_history() deletes old rows and re-inserts them — the
+    re-inserted rows receive new, higher auto-increment IDs, so MAX(id) would
+    incorrectly return compressed historical rows instead of today's prices.
     """
     with get_conn() as conn:
         return pd.read_sql_query("""
-            SELECT item_key, cf_price, steam_price,
-                   stale as cf_stale
-            FROM price_history
-            WHERE id IN (SELECT MAX(id) FROM price_history GROUP BY item_key)
+            SELECT ph.item_key, ph.cf_price, ph.steam_price,
+                   ph.stale  AS cf_stale,
+                   ph.method AS cf_method
+            FROM   price_history ph
+            INNER JOIN (
+                SELECT item_key, MAX(timestamp) AS max_ts
+                FROM   price_history
+                GROUP  BY item_key
+            ) latest
+              ON  ph.item_key  = latest.item_key
+              AND ph.timestamp = latest.max_ts
+            GROUP BY ph.item_key
         """, conn)
 
 
@@ -208,11 +225,13 @@ def get_last_known_cf_price(item_key: str) -> tuple[float, bool]:
     """
     Return (price, stale=True) for the most recent CF price for this item_key.
     Returns (0.0, False) if no price exists at all.
+
+    Uses ORDER BY timestamp DESC (not id DESC) — see get_latest_prices() note.
     """
     with get_conn() as conn:
         row = conn.execute(
             "SELECT cf_price, stale FROM price_history "
-            "WHERE item_key=? AND cf_price > 0 ORDER BY id DESC LIMIT 1",
+            "WHERE item_key=? AND cf_price > 0 ORDER BY timestamp DESC LIMIT 1",
             (item_key,),
         ).fetchone()
     if row:
@@ -252,9 +271,26 @@ def get_price_history_for_item(item_key: str, source: str = "cf") -> pd.DataFram
 def compress_old_price_history():
     today = date.today().isoformat()
     with get_conn() as conn:
+        # Pick the most precise method seen for that item on that day.
+        # Precedence (higher = more precise): seed_float > seed > float > basic > stale > ''
         rows = conn.execute("""
             SELECT item_key, substr(timestamp,1,10) as day,
-                   AVG(cf_price), AVG(steam_price), MAX(stale)
+                   AVG(cf_price), AVG(steam_price), MAX(stale),
+                   CASE MAX(
+                       CASE method
+                           WHEN 'seed_float' THEN 5
+                           WHEN 'seed'       THEN 4
+                           WHEN 'float'      THEN 3
+                           WHEN 'basic'      THEN 2
+                           WHEN 'stale'      THEN 1
+                           ELSE 0
+                       END)
+                   WHEN 5 THEN 'seed_float'
+                   WHEN 4 THEN 'seed'
+                   WHEN 3 THEN 'float'
+                   WHEN 2 THEN 'basic'
+                   WHEN 1 THEN 'stale'
+                   ELSE '' END AS best_method
             FROM price_history
             WHERE substr(timestamp,1,10) < ?
             GROUP BY item_key, day
@@ -263,9 +299,10 @@ def compress_old_price_history():
             return
         conn.execute("DELETE FROM price_history WHERE substr(timestamp,1,10) < ?", (today,))
         conn.executemany(
-            "INSERT INTO price_history (item_key, cf_price, steam_price, timestamp, stale) "
-            "VALUES (?,?,?,?,?)",
-            [(r[0], round(r[2], 4), round(r[3], 4), f"{r[1]} 12:00", r[4]) for r in rows],
+            "INSERT INTO price_history (item_key, cf_price, steam_price, timestamp, stale, method) "
+            "VALUES (?,?,?,?,?,?)",
+            [(r[0], round(r[2], 4), round(r[3], 4), f"{r[1]} 12:00", r[4], r[5])
+             for r in rows],
         )
 
 

@@ -13,10 +13,11 @@ st.title("💰 Sync Prices")
 
 METHOD_LABELS = {
     "basic":      "🔍 Basic",
+    "imprecise":  "⚠️ Imprecise",
     "float":      "📐 + Float",
     "seed":       "🎨 Paint seed",
     "seed_float": "🎨📐 Seed + float",
-    "stale":      "⚠️ Last known",
+    "stale":      "♻️ Last known",
     "no_price":   "🔴 Not found",
 }
 
@@ -121,11 +122,13 @@ def _progress_cb(pct: float, msg: str, log_line: str | None = None):
     line = log_line.strip()
 
     # Parse CSFloat result lines:  "✅ Name: method → $1.23"  or  "🔴 Name: ..."
-    if line.startswith(("✅", "⚠️", "🔴")) and "→" in line:
+    if line.startswith(("✅", "⚠️", "♻️", "🔴")) and "→" in line:
         if line.startswith("✅"):
             status = "✅ Fresh"
         elif line.startswith("⚠️"):
-            status = "⚠️ Stale"
+            status = "⚠️ Imprecise"
+        elif line.startswith("♻️"):
+            status = "♻️ Stale"
         else:
             status = "🔴 Missing"
 
@@ -180,9 +183,10 @@ st.cache_data.clear()
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 progress_bar.progress(1.0, text="✅ Done!")
-ok_n    = sum(1 for r in log_rows if r.get("status") == "✅ Fresh")
-stale_n = sum(1 for r in log_rows if r.get("status") == "⚠️ Stale")
-miss_n  = sum(1 for r in log_rows if r.get("status") == "🔴 Missing")
+ok_n        = sum(1 for r in log_rows if r.get("status") == "✅ Fresh")
+imprecise_n = sum(1 for r in log_rows if r.get("status") == "⚠️ Imprecise")
+stale_n     = sum(1 for r in log_rows if r.get("status") == "♻️ Stale")
+miss_n      = sum(1 for r in log_rows if r.get("status") == "🔴 Missing")
 skipped = len(inv) - len(todo if not is_retry else retry_candidates)
 
 current_item_display.markdown(
@@ -190,11 +194,17 @@ current_item_display.markdown(
     f"{len(log_rows)} fetched · {skipped} skipped"
 )
 
-s1, s2, s3 = st.columns(3)
-s1.metric("✅ Fresh",   ok_n)
-s2.metric("⚠️ Stale",  stale_n)
-s3.metric("🔴 Missing", miss_n)
+s1, s2, s3, s4 = st.columns(4)
+s1.metric("✅ Fresh",       ok_n)
+s2.metric("⚠️ Imprecise",  imprecise_n)
+s3.metric("♻️ Stale",      stale_n)
+s4.metric("🔴 Missing",    miss_n)
 
+if imprecise_n > 0:
+    st.info(
+        f"**{imprecise_n} item(s)** got a wear-floor price without float or pattern matching. "
+        "The price is valid but may not reflect the exact float/pattern value of your item."
+    )
 if miss_n > 0:
     st.info(
         f"**{miss_n} item(s)** had no price found. "

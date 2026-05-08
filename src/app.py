@@ -60,14 +60,16 @@ st.markdown("""
 # hasn't been called yet the registry is empty and a KeyError: 'url_pathname'
 # is raised on reload / re-open. Defining pages and calling st.navigation()
 # here ensures the registry is populated before the sidebar renders.
-portfolio_page    = st.Page("pages/portfolio.py",    title="Portfolio",    icon="💼")
-charts_page       = st.Page("pages/charts.py",       title="Charts",       icon="📊")
-transactions_page = st.Page("pages/transactions.py", title="Transactions", icon="✏️")
-sync_page         = st.Page("pages/sync_page.py",    title="Sync Prices",  icon="💰")
-sync_history_page = st.Page("pages/sync_history.py", title="Sync History", icon="🕘")
+portfolio_page    = st.Page("pages/portfolio.py",     title="Portfolio",    icon="💼")
+charts_page       = st.Page("pages/charts.py",        title="Charts",       icon="📊")
+realized_pnl_page = st.Page("pages/realized_pnl.py",  title="Realized P&L", icon="💸")
+transactions_page = st.Page("pages/transactions.py",  title="Transactions", icon="✏️")
+sync_page         = st.Page("pages/sync_page.py",     title="Sync Prices",  icon="💰")
+sync_history_page = st.Page("pages/sync_history.py",  title="Sync History", icon="🕘")
 
 pg = st.navigation(
-    [portfolio_page, charts_page, transactions_page, sync_page, sync_history_page]
+    [portfolio_page, charts_page, realized_pnl_page,
+     transactions_page, sync_page, sync_history_page]
 )
 
 
@@ -133,6 +135,7 @@ with st.sidebar:
     # ── 2. Navigation -- pass Page objects directly, never string paths -------
     st.page_link(portfolio_page,    label="Portfolio",    use_container_width=True)
     st.page_link(charts_page,       label="Charts",       use_container_width=True)
+    st.page_link(realized_pnl_page, label="Realized P&L", use_container_width=True)
     st.page_link(transactions_page, label="Transactions", use_container_width=True)
     st.page_link(sync_history_page, label="Sync History", use_container_width=True)
 

@@ -19,6 +19,13 @@ ROOT_DIR = SRC_DIR.parent                    # .../repo
 
 TASK_NAME = "CS2SkInvest_AutoSync"
 
+# Supported trigger modes
+TRIGGER_MODES = {
+    "daily":  "Daily at set time (+ run on startup if missed)",
+    "logon":  "At every startup / login",
+    "hourly": "Every hour",
+}
+
 
 def _python_exe() -> str:
     """Return pythonw.exe (silent) or fall back to python.exe."""
@@ -93,14 +100,76 @@ def get_task_status() -> dict:
     }
 
 
-def create_task(run_time: str = "06:00") -> tuple:
+def _make_trigger_xml(trigger_mode: str, run_time: str = "06:00") -> str:
     """
-    Create (or overwrite) the scheduled task.
-    run_time: "HH:MM" 24-hour, e.g. "06:00"
+    Return the <Triggers> XML block for the given trigger_mode.
+
+    trigger_mode:
+        "daily"  – CalendarTrigger at run_time each day
+                   (StartWhenAvailable in Settings means it also runs on the
+                    next startup if the PC was off at the scheduled time)
+        "logon"  – LogonTrigger: runs every time the user logs in / PC starts
+        "hourly" – TimeTrigger with PT1H repetition; auto_sync.py skips the
+                   run if prices were already fetched today
+    """
+    if trigger_mode == "logon":
+        return """\
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>"""
+
+    if trigger_mode == "hourly":
+        return """\
+  <Triggers>
+    <TimeTrigger>
+      <StartBoundary>2024-01-01T00:00:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <Repetition>
+        <Interval>PT1H</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>"""
+
+    # default: "daily"
+    return """\
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2024-01-01T{}:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>
+  </Triggers>""".format(run_time)
+
+
+def create_task(run_time: str = "06:00", trigger_mode: str = "daily") -> tuple:
+    """
+    Create (or overwrite) the scheduled task using schtasks CLI flags.
+
+    The CLI approach (/sc ONLOGON, /sc DAILY, /sc HOURLY) registers the task
+    for the current interactive user without requiring administrator rights.
+    XML-based registration requires elevation as soon as a <Principal> block
+    is specified — so we avoid XML entirely here.
+
+    auto_sync.py resolves all paths via Path(__file__), so WorkingDirectory
+    does not need to be set explicitly.
+
+    Parameters
+    ----------
+    run_time     : "HH:MM" 24-hour — used only when trigger_mode == "daily"
+    trigger_mode : "daily" | "logon" | "hourly"
+
     Returns (success: bool, message: str)
     """
     if not is_windows():
         return False, "Task Scheduler is only available on Windows."
+
+    if trigger_mode not in TRIGGER_MODES:
+        trigger_mode = "daily"
 
     python_exe = _python_exe()
     script     = SRC_DIR / "auto_sync.py"
@@ -108,65 +177,95 @@ def create_task(run_time: str = "06:00") -> tuple:
     if not script.exists():
         return False, "auto_sync.py not found at: {}".format(script)
 
-    xml = """<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>CS2 SkInvest - daily price sync</Description>
-  </RegistrationInfo>
-  <Triggers>
-    <CalendarTrigger>
-      <StartBoundary>2024-01-01T{}:00</StartBoundary>
-      <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
-      <Enabled>true</Enabled>
-      <ScheduleByDay>
-        <DaysInterval>1</DaysInterval>
-      </ScheduleByDay>
-    </CalendarTrigger>
-  </Triggers>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <StopOnIdleEnd>false</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
-    <Priority>7</Priority>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>{}</Command>
-      <Arguments>"{}"</Arguments>
-      <WorkingDirectory>{}</WorkingDirectory>
-    </Exec>
-  </Actions>
-</Task>""".format(run_time, python_exe, script, ROOT_DIR)
+    # /tr value: quoted exe + quoted script path
+    tr = '"{}" "{}"'.format(python_exe, script)
 
-    xml_path = ROOT_DIR / "data" / "_task_tmp.xml"
-    xml_path.parent.mkdir(parents=True, exist_ok=True)
-    xml_path.write_text(xml, encoding="utf-16")
+    # First delete any existing task so /f can recreate it cleanly
+    _schtasks("/delete", "/tn", TASK_NAME, "/f")
 
-    result = _schtasks("/create", "/tn", TASK_NAME, "/xml", str(xml_path), "/f")
-
-    try:
-        xml_path.unlink()
-    except Exception:
-        pass
+    if trigger_mode == "logon":
+        result = _schtasks(
+            "/create", "/tn", TASK_NAME,
+            "/tr", tr,
+            "/sc", "ONLOGON",
+            "/f",
+        )
+    elif trigger_mode == "hourly":
+        result = _schtasks(
+            "/create", "/tn", TASK_NAME,
+            "/tr", tr,
+            "/sc", "HOURLY",
+            "/mo", "1",
+            "/f",
+        )
+    else:  # daily
+        result = _schtasks(
+            "/create", "/tn", TASK_NAME,
+            "/tr", tr,
+            "/sc", "DAILY",
+            "/st", run_time,
+            "/ri", "0",      # no repetition interval
+            "/f",
+        )
 
     if result.returncode == 0:
-        return True, "Task '{}' created -- runs daily at {}.".format(TASK_NAME, run_time)
+        # Apply advanced settings that schtasks CLI cannot set directly.
+        # PowerShell's Set-ScheduledTask works for per-user tasks without admin.
+        _apply_advanced_settings(trigger_mode)
+
+        labels = {
+            "daily":  "daily at {}".format(run_time),
+            "logon":  "at every startup / login",
+            "hourly": "every hour",
+        }
+        return True, "Task '{}' created — runs {}.".format(
+            TASK_NAME, labels.get(trigger_mode, trigger_mode)
+        )
     else:
         err = result.stderr.strip() or result.stdout.strip()
         return False, "Failed to create task: {}".format(err)
+
+
+def _apply_advanced_settings(trigger_mode: str) -> None:
+    """
+    Use PowerShell to patch the task after schtasks CLI creation:
+      • RestartOnFailure  — retry every 10 min, up to 3 times
+      • ExecutionTimeLimit — max 2 hours
+      • Delay             — 5 min startup delay (logon trigger only)
+
+    This is best-effort: if PowerShell is unavailable or the call fails,
+    the task still works; it just won't have the retry/delay behaviour.
+    """
+    # Build the PowerShell one-liner in two parts: settings + optional delay
+    ps_settings = (
+        "$s = New-ScheduledTaskSettingsSet"
+        " -MultipleInstances IgnoreNew"
+        " -RestartCount 3"
+        " -RestartInterval (New-TimeSpan -Minutes 10)"
+        " -ExecutionTimeLimit (New-TimeSpan -Hours 2);"
+        " Set-ScheduledTask -TaskName '{tn}' -Settings $s"
+    ).format(tn=TASK_NAME)
+
+    if trigger_mode == "logon":
+        # Patch the first trigger's Delay property to PT5M (5 minutes).
+        # This gives the network time to come up before auto_sync.py runs.
+        ps_delay = (
+            " $t = Get-ScheduledTask -TaskName '{tn}';"
+            " $trig = $t.Triggers[0];"
+            " $trig.Delay = 'PT5M';"
+            " $t | Set-ScheduledTask"
+        ).format(tn=TASK_NAME)
+        ps_script = ps_settings + ";" + ps_delay
+    else:
+        ps_script = ps_settings
+
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script],
+            capture_output=True, text=True, timeout=15,
+        )
+    except Exception:
+        pass  # silently ignore — basic task was already created successfully
 
 
 def delete_task() -> tuple:

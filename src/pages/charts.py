@@ -166,9 +166,9 @@ with tab3:
         if sel_type != "All":
             pl = pl[portfolio["item_type"] == sel_type]
 
-        MAX_VISIBLE = 20 
-        row_height  = 38
-        fixed_height = min(max(CHART_HEIGHT, len(pl) * row_height),MAX_VISIBLE * row_height + 80)  # +80 for title/margins
+        # Height grows proportionally — each bar ~38 px, +80 for title/axes.
+        row_height   = 38
+        chart_height = max(CHART_HEIGHT, len(pl) * row_height + 80)
 
         fig3 = go.Figure(go.Bar(
             x=pl["cf_pnl"], y=pl["label"], orientation="h",
@@ -178,13 +178,10 @@ with tab3:
         fig3.update_layout(
             title="Unrealized P&L per item  (CSFloat prices)",
             xaxis_title="P&L (USD)", yaxis_title=None,
-            height=fixed_height,
+            height=chart_height,
             plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
-            yaxis=dict(
-                range=[len(pl) - MAX_VISIBLE - 0.5, len(pl) - 0.5], 
-                fixedrange=False, 
-            ),
-            xaxis=dict(fixedrange=True), 
+            yaxis=dict(fixedrange=True),
+            xaxis=dict(fixedrange=True),
         )
         st.plotly_chart(fig3, width='stretch')
     else:

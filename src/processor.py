@@ -436,9 +436,12 @@ def sync_prices(
         cf_price, stale, method = csf_pricer.fetch_cf_price(row.to_dict())
 
         if cf_price > 0 and not stale:
-            cf_log = f"✅ {name}: {method} → ${cf_price:.2f}"
+            if method == "imprecise":
+                cf_log = f"⚠️ {name}: imprecise → ${cf_price:.2f}"
+            else:
+                cf_log = f"✅ {name}: {method} → ${cf_price:.2f}"
         elif stale:
-            cf_log = f"⚠️ {name}: stale → ${cf_price:.2f}"
+            cf_log = f"♻️ {name}: stale → ${cf_price:.2f}"
         else:
             cf_log = f"🔴 {name}: no CSFloat price"
         _progress(pct, f"📦 ({count}/{total}) CSFloat: {name}", cf_log)
@@ -457,7 +460,8 @@ def sync_prices(
 
         # — Save snapshot immediately (don't wait until the end) —
         if cf_price > 0 or st_price > 0:
-            database.save_price_snapshot(key, cf_price, st_price, ts, stale=stale)
+            database.save_price_snapshot(key, cf_price, st_price, ts,
+                                         stale=stale, method=method)
 
         log_rows.append({
             "run_id":      run_id,
@@ -499,6 +503,98 @@ def sync_prices(
     return portfolio
 
 
+# ── Realized P&L (computed from raw ledger) ───────────────────────────────────
+
+def get_realized_pnl_df() -> pd.DataFrame:
+    """
+    Compute realized P&L for items that have at least one sell transaction.
+
+    Returns one row per unique item_key that has ever been sold.
+    Items that are partially sold (still have qty > 0) are included too.
+
+    Columns
+    -------
+    item_key, item_name, item_type, wear, float_val, paint_seed,
+    qty_bought, qty_sold, avg_buy, avg_sell,
+    total_cost, total_revenue, realized_pnl, return_pct, last_sell_date
+    """
+    df = _load_ledger()
+    if df.empty:
+        return pd.DataFrame()
+
+    df = _assign_item_keys(df)
+
+    results = []
+    for key, g in df.groupby("item_key"):
+        sells = g[g["Quantity"] < 0]
+        if sells.empty:
+            continue   # never sold — skip
+
+        buys       = g[g["Quantity"] > 0]
+        qty_sold   = int(abs(sells["Quantity"].sum()))
+        qty_bought = int(buys["Quantity"].sum()) if not buys.empty else 0
+
+        # Weighted-average buy price (same formula as rebuild_inventory)
+        if not buys.empty and buys["Quantity"].sum() > 0:
+            avg_buy = (
+                (buys["Price_USD"] * buys["Quantity"]).sum()
+                / buys["Quantity"].sum()
+            )
+        else:
+            avg_buy = 0.0
+
+        # Average sell price — weighted by units sold per row
+        sell_qty_abs  = sells["Quantity"].abs()
+        total_revenue = (sells["Price_USD"] * sell_qty_abs).sum()
+        avg_sell      = total_revenue / qty_sold if qty_sold > 0 else 0.0
+        cost_of_sold  = avg_buy * qty_sold
+        realized_pnl  = total_revenue - cost_of_sold
+        return_pct    = (realized_pnl / cost_of_sold * 100) if cost_of_sold > 0 else 0.0
+
+        # Metadata from the first buy row (or any row if no buys)
+        meta  = buys.iloc[0] if not buys.empty else g.iloc[0]
+        name  = meta["Item_Name"]
+        itype = meta["Item_Type"]
+
+        f4   = round(float(g["Float"].dropna().mean()), 4) \
+               if itype in ("Skin", "Knife") and not g["Float"].isnull().all() else None
+        seed = int(g["Paint_Seed"].dropna().iloc[0]) \
+               if itype in ("Skin", "Knife") and not g["Paint_Seed"].isnull().all() else None
+
+        # Most recent sell date
+        last_sell = None
+        if "Date" in sells.columns:
+            valid_dates = sells["Date"].dropna()
+            last_sell   = str(valid_dates.max()) if not valid_dates.empty else None
+
+        results.append({
+            "item_key":       key,
+            "item_name":      name,
+            "item_type":      itype,
+            "wear":           get_wear(name),
+            "float_val":      f4,
+            "paint_seed":     seed,
+            "qty_bought":     qty_bought,
+            "qty_sold":       qty_sold,
+            "avg_buy":        round(avg_buy, 2),
+            "avg_sell":       round(avg_sell, 2),
+            "total_cost":     round(cost_of_sold, 2),
+            "total_revenue":  round(total_revenue, 2),
+            "realized_pnl":   round(realized_pnl, 2),
+            "return_pct":     round(return_pct, 1),
+            "last_sell_date": last_sell,
+        })
+
+    if not results:
+        return pd.DataFrame()
+
+    return (
+        pd.DataFrame(results)
+        .sort_values("realized_pnl", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
 # ── Read portfolio (fast, from DB) ────────────────────────────────────────────
 
 def build_portfolio_from_db() -> pd.DataFrame:
@@ -510,17 +606,19 @@ def build_portfolio_from_db() -> pd.DataFrame:
     if inv.empty:
         return inv
 
-    prices = database.get_latest_prices()   # item_key, cf_price, steam_price, cf_stale
+    prices = database.get_latest_prices()   # item_key, cf_price, steam_price, cf_stale, cf_method
     if prices.empty:
         portfolio = inv.copy()
         for col in ("cf_price", "steam_price"):
             portfolio[col] = 0.0
-        portfolio["cf_stale"] = False
+        portfolio["cf_stale"]  = False
+        portfolio["cf_method"] = ""
     else:
         portfolio = inv.merge(prices, on="item_key", how="left")
         portfolio["cf_price"]    = portfolio["cf_price"].fillna(0)
         portfolio["steam_price"] = portfolio["steam_price"].fillna(0)
         portfolio["cf_stale"]    = portfolio["cf_stale"].fillna(False).astype(bool)
+        portfolio["cf_method"]   = portfolio["cf_method"].fillna("")
 
     portfolio["cf_value"]   = portfolio["quantity"] * portfolio["cf_price"]
     portfolio["steam_value"]= portfolio["quantity"] * portfolio["steam_price"]
