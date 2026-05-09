@@ -48,6 +48,20 @@ def is_windows() -> bool:
     return sys.platform == "win32"
 
 
+def is_admin() -> bool:
+    """
+    Return True if the current process has administrator / elevated privileges.
+    Always returns True on non-Windows (no restriction there).
+    """
+    if not is_windows():
+        return True
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
 def get_task_status() -> dict:
     """
     Query the scheduled task.

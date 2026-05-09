@@ -396,6 +396,8 @@ def sync_prices(
     def _progress(pct: float, msg: str, log_line: str | None = None):
         if progress_cb:
             progress_cb(pct, msg, log_line)
+        # Keep DB status in sync so the UI can poll it
+        database.sync_status_set(running=True, pct=pct, msg=msg)
 
     inv = database.get_active_inventory_df()
     if inv.empty:
@@ -419,88 +421,101 @@ def sync_prices(
     ts     = datetime.now().strftime("%Y-%m-%d %H:%M")
     run_id = uuid.uuid4().hex[:12]
 
+    # Mark sync as started in DB so all pages can see it
+    database.sync_status_set(
+        running=True,
+        started_at=datetime.now().isoformat(timespec="seconds"),
+        pct=0.0,
+        msg="Starting…",
+    )
+
     # Track which steam names we've already fetched this run (dedup across
     # multiple rows with the same item_name, e.g. same skin different floats)
     steam_cache: dict[str, float] = {}
     log_rows:    list[dict]       = []
 
-    # ── Interleaved CSFloat + Steam per item ──────────────────────────────────
-    for idx, (_, row) in enumerate(inv_todo.iterrows()):
-        name    = row["item_name"]
-        key     = row["item_key"]
-        pct     = idx / total
-        count   = idx + 1
+    try:
+        # ── Interleaved CSFloat + Steam per item ──────────────────────────────
+        for idx, (_, row) in enumerate(inv_todo.iterrows()):
+            name    = row["item_name"]
+            key     = row["item_key"]
+            pct     = idx / total
+            count   = idx + 1
 
-        # — CSFloat —
-        _progress(pct, f"📦 ({count}/{total}) CSFloat: {name}", None)
-        cf_price, stale, method = csf_pricer.fetch_cf_price(row.to_dict())
+            # — CSFloat —
+            _progress(pct, f"📦 ({count}/{total}) CSFloat: {name}", None)
+            cf_price, stale, method = csf_pricer.fetch_cf_price(row.to_dict())
 
-        if cf_price > 0 and not stale:
-            if method == "imprecise":
-                cf_log = f"⚠️ {name}: imprecise → ${cf_price:.2f}"
+            if cf_price > 0 and not stale:
+                if method == "imprecise":
+                    cf_log = f"⚠️ {name}: imprecise → ${cf_price:.2f}"
+                else:
+                    cf_log = f"✅ {name}: {method} → ${cf_price:.2f}"
+            elif stale:
+                cf_log = f"♻️ {name}: stale → ${cf_price:.2f}"
             else:
-                cf_log = f"✅ {name}: {method} → ${cf_price:.2f}"
-        elif stale:
-            cf_log = f"♻️ {name}: stale → ${cf_price:.2f}"
-        else:
-            cf_log = f"🔴 {name}: no CSFloat price"
-        _progress(pct, f"📦 ({count}/{total}) CSFloat: {name}", cf_log)
-        time.sleep(cf_delay)
+                cf_log = f"🔴 {name}: no CSFloat price"
+            _progress(pct, f"📦 ({count}/{total}) CSFloat: {name}", cf_log)
+            time.sleep(cf_delay)
 
-        # — Steam (skip if already fetched for this name in this run) —
-        if name not in steam_cache:
-            _progress(pct, f"🌐 ({count}/{total}) Steam: {name}", None)
-            st_price = fetch_steam_price(name)
-            steam_cache[name] = st_price
-            st_log = f"   🌐 Steam → ${st_price:.2f}" if st_price else "   🌐 Steam → no price"
-            _progress(pct, f"🌐 ({count}/{total}) Steam: {name}", st_log)
-            time.sleep(steam_delay)
-        else:
-            st_price = steam_cache[name]
+            # — Steam (skip if already fetched for this name in this run) —
+            if name not in steam_cache:
+                _progress(pct, f"🌐 ({count}/{total}) Steam: {name}", None)
+                st_price = fetch_steam_price(name)
+                steam_cache[name] = st_price
+                st_log = f"   🌐 Steam → ${st_price:.2f}" if st_price else "   🌐 Steam → no price"
+                _progress(pct, f"🌐 ({count}/{total}) Steam: {name}", st_log)
+                time.sleep(steam_delay)
+            else:
+                st_price = steam_cache[name]
 
-        # — Save snapshot immediately (don't wait until the end) —
-        if cf_price > 0 or st_price > 0:
-            database.save_price_snapshot(key, cf_price, st_price, ts,
-                                         stale=stale, method=method)
+            # — Save snapshot immediately (don't wait until the end) —
+            if cf_price > 0 or st_price > 0:
+                database.save_price_snapshot(key, cf_price, st_price, ts,
+                                             stale=stale, method=method)
 
-        log_rows.append({
-            "run_id":      run_id,
-            "timestamp":   ts,
-            "item_key":    key,
-            "item_name":   name,
-            "item_type":   row.get("item_type", ""),
-            "cf_price":    cf_price,
-            "steam_price": st_price,
-            "method":      method,
-            "stale":       int(stale),
-            "trigger":     trigger,
-        })
+            log_rows.append({
+                "run_id":      run_id,
+                "timestamp":   ts,
+                "item_key":    key,
+                "item_name":   name,
+                "item_type":   row.get("item_type", ""),
+                "cf_price":    cf_price,
+                "steam_price": st_price,
+                "method":      method,
+                "stale":       int(stale),
+                "trigger":     trigger,
+            })
 
-    _progress(0.98, "💾 Saving sync log…", "💾 Saving sync log…")
-    database.save_sync_log_rows(log_rows)
+        _progress(0.98, "💾 Saving sync log…", "💾 Saving sync log…")
+        database.save_sync_log_rows(log_rows)
 
-    portfolio = build_portfolio_from_db()
-    database.save_portfolio_snapshot(
-        cf_value=portfolio["cf_value"].sum(),
-        steam_value=portfolio["steam_value"].sum(),
-        total_cost=portfolio["total_cost"].sum(),
-        timestamp=ts,
-    )
+        portfolio = build_portfolio_from_db()
+        database.save_portfolio_snapshot(
+            cf_value=portfolio["cf_value"].sum(),
+            steam_value=portfolio["steam_value"].sum(),
+            total_cost=portfolio["total_cost"].sum(),
+            timestamp=ts,
+        )
 
-    database.meta_set("last_price_sync", datetime.now().strftime("%Y-%m-%d %H:%M"))
-    if trigger == "auto":
-        database.meta_set("last_auto_sync", datetime.now().strftime("%Y-%m-%d %H:%M"))
-    database.compress_old_price_history()
-    database.compress_old_portfolio_snapshots()
+        database.meta_set("last_price_sync", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        if trigger == "auto":
+            database.meta_set("last_auto_sync", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        database.compress_old_price_history()
+        database.compress_old_portfolio_snapshots()
 
-    skipped  = len(inv) - len(inv_todo)
-    ok_n     = sum(1 for r in log_rows if r["cf_price"] > 0 and not r["stale"])
-    miss_n   = sum(1 for r in log_rows if r["cf_price"] == 0)
-    done_msg = (f"✅ Done! {ok_n} priced, {miss_n} missing, "
-                f"{skipped} skipped (already priced today).")
-    _progress(1.0, done_msg, done_msg)
+        skipped  = len(inv) - len(inv_todo)
+        ok_n     = sum(1 for r in log_rows if r["cf_price"] > 0 and not r["stale"])
+        miss_n   = sum(1 for r in log_rows if r["cf_price"] == 0)
+        done_msg = (f"✅ Done! {ok_n} priced, {miss_n} missing, "
+                    f"{skipped} skipped (already priced today).")
+        _progress(1.0, done_msg, done_msg)
 
-    return portfolio
+        return portfolio
+
+    finally:
+        # Always mark sync as finished — even on exception or KeyboardInterrupt
+        database.sync_status_set(running=False)
 
 
 # ── Realized P&L (computed from raw ledger) ───────────────────────────────────

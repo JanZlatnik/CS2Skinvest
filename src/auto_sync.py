@@ -59,9 +59,9 @@ except ImportError:
     pass
 
 RETRY_DELAY_MINUTES = 30
-CF_DELAY_PASS1      = 1.5
+CF_DELAY_PASS1      = 3.0
 STEAM_DELAY_PASS1   = 3.0
-CF_DELAY_PASS2      = 3.0
+CF_DELAY_PASS2      = 6.0
 STEAM_DELAY_PASS2   = 3.0
 
 
@@ -105,6 +105,15 @@ def main() -> int:
         if inv.empty:
             log.warning("No active inventory -- nothing to sync.")
             return 1
+
+        # Guard: don't start if another sync is already running
+        status = database.sync_status_get()
+        if status["running"]:
+            log.warning(
+                "Sync already running (started %s) -- skipping this run.",
+                status["started_at"],
+            )
+            return 0
 
         already        = database.get_items_with_todays_price()
         unpriced_today = database.get_items_unpriced_today()

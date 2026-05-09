@@ -1,19 +1,22 @@
 """
-sync_history.py  —  Sync History & Auto-Sync Setup page
+sync_history.py  —  📋 Price History page
+
+Tab 1 — Sync History   : date picker → run selector → results table (unchanged)
+Tab 2 — Sync Log       : auto_sync.log viewer with adjustable line count
 """
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+from datetime import date
 import database
 import scheduler
 
-st.title("🕘 Sync History & Auto-Sync")
+st.title("📋 Price History")
 
-tab_history, tab_auto = st.tabs(["📋 Sync History", "⚙️ Auto-Sync Setup"])
+tab_history, tab_log = st.tabs(["📋 Sync History", "📄 Sync Log"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 1 — Sync History
+# TAB 1 — Sync History  (unchanged from original)
 # NOTE: never call st.stop() inside a tab — it kills all other tabs too.
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
@@ -61,7 +64,6 @@ with tab_history:
                 chosen_label = st.selectbox("Sync run", list(run_labels.keys()))
 
             chosen_run_id = run_labels[chosen_label]
-
             df = database.get_sync_log_for_run(chosen_run_id)
 
             if df.empty:
@@ -85,8 +87,8 @@ with tab_history:
                 display = df.copy()
                 display["Status"] = display.apply(
                     lambda r: (
-                        "♻️ Stale"     if r["stale"]
-                        else "🔴 Missing"  if r["cf_price"] == 0
+                        "♻️ Stale"      if r["stale"]
+                        else "🔴 Missing"   if r["cf_price"] == 0
                         else "⚠️ Imprecise" if r["method"] == "imprecise"
                         else "✅ Fresh"
                     ),
@@ -122,7 +124,7 @@ with tab_history:
 
                 st.dataframe(
                     display,
-                    width='stretch',
+                    width="stretch",
                     hide_index=True,
                     height=min(600, 60 + len(display) * 35),
                     column_config={
@@ -140,190 +142,52 @@ with tab_history:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Auto-Sync Setup
+# TAB 2 — Sync Log
 # ══════════════════════════════════════════════════════════════════════════════
-with tab_auto:
+with tab_log:
 
-    on_windows = scheduler.is_windows()
-
-    if not on_windows:
-        st.warning(
-            "**Auto-Sync Setup requires Windows.**  \n"
-            "This feature uses Windows Task Scheduler to run price syncs "
-            "automatically in the background.  \n\n"
-            "On macOS/Linux you can achieve the same result with a cron job:  \n"
-            "```\n0 6 * * * cd /path/to/app && python auto_sync.py\n```"
-        )
-
-    # ── Current status card ───────────────────────────────────────────────────
-    st.subheader("Status")
-    status    = scheduler.get_task_status()
-    last_auto = database.meta_get("last_auto_sync")
-
-    if status["exists"] and status["enabled"]:
-        st.success("🟢 Auto-Sync is **enabled**")
-    elif status["exists"] and not status["enabled"]:
-        st.warning("🟡 Task exists but is **disabled** in Task Scheduler")
-    else:
-        st.info("⚪ Auto-Sync is **not set up** — configure it below")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Last auto-sync", last_auto or "never")
-    c2.metric("Next scheduled", status["next_run"] or "—")
-    raw_rt = status["run_time"] or ""
-    if raw_rt and ":" in raw_rt:
-        parts = raw_rt.split(":")
-        h_r, m_r = parts[0], parts[1]
-        formatted_rt = f"{int(h_r):02d}:{int(m_r):02d}"
-    else:
-        formatted_rt = raw_rt or "—"
-    c3.metric("Scheduled time", formatted_rt)
-
-    if status["last_result"] is not None:
-        code         = status["last_result"]
-        result_label = "✅ Success (0)" if code == "0" else f"⚠️ Exit code {code}"
-        st.caption(f"Last task result: **{result_label}**")
-
-    st.divider()
-
-    # ── Configure section ─────────────────────────────────────────────────────
-    st.subheader("Configure")
-
-    cfg_left, _ = st.columns([2, 3])
-
-    with cfg_left:
-        # ── Trigger mode selector ─────────────────────────────────────────
-        import database as _db
-        saved_mode = _db.meta_get("auto_sync_trigger_mode") or "daily"
-        mode_labels = list(scheduler.TRIGGER_MODES.values())
-        mode_keys   = list(scheduler.TRIGGER_MODES.keys())
-        default_idx = mode_keys.index(saved_mode) if saved_mode in mode_keys else 0
-
-        sel_mode_label = st.radio(
-            "Trigger mode",
-            mode_labels,
-            index=default_idx,
-            key="auto_sync_mode",
-        )
-        sel_mode = mode_keys[mode_labels.index(sel_mode_label)]
-
-        # ── Time inputs (daily mode only) ─────────────────────────────────
-        run_time_str = "06:00"
-        if sel_mode == "daily":
-            default_hour, default_minute = 6, 0
-            if status["run_time"] and ":" in status["run_time"]:
-                try:
-                    h, m = status["run_time"].split(":")
-                    default_hour, default_minute = int(h), int(m)
-                except ValueError:
-                    pass
-
-            run_hour   = st.number_input("Hour (0–23)",   min_value=0, max_value=23,
-                                         value=default_hour,   step=1)
-            run_minute = st.number_input("Minute (0–59)", min_value=0, max_value=59,
-                                         value=default_minute, step=5)
-            run_time_str = f"{int(run_hour):02d}:{int(run_minute):02d}"
-            st.caption(f"Will run daily at **{run_time_str}**")
-            st.caption(
-                "⚡ If the computer is **off** at that time, `StartWhenAvailable` "
-                "ensures the sync still runs on the **next startup**."
-            )
-        elif sel_mode == "logon":
-            st.caption(
-                "Runs **every time you log in** or the PC boots up.  \n"
-                "`auto_sync.py` skips the work if prices are already fresh today."
-            )
-        elif sel_mode == "hourly":
-            st.caption(
-                "Runs **every hour**. If prices were already fetched today the "
-                "script exits in under a second — no extra load."
-            )
-
-        # ── Action buttons ────────────────────────────────────────────────
-        st.markdown("")
-        if on_windows:
-            btn_label = "✅ Enable Auto-Sync" if not status["exists"] else "🔄 Update Schedule"
-            if st.button(btn_label, width='stretch', type="primary"):
-                ok, msg = scheduler.create_task(run_time_str, trigger_mode=sel_mode)
-                if ok:
-                    _db.meta_set("auto_sync_trigger_mode", sel_mode)
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
-
-            if st.button("🗑️ Remove Task", width='stretch',
-                         disabled=not status["exists"], type="secondary"):
-                ok, msg = scheduler.delete_task()
-                if ok:
-                    _db.meta_set("auto_sync_trigger_mode", "daily")
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
-
-            if st.button("▶ Run Now (test)", width='stretch',
-                         disabled=not status["exists"],
-                         help="Trigger the task immediately to verify it works"):
-                ok, msg = scheduler.run_task_now()
-                if ok:
-                    st.success(msg)
-                    st.info(
-                        "Sync running in background.  \n"
-                        "Check the log below in ~1 minute, or open **📋 Sync History**."
-                    )
-                else:
-                    st.error(msg)
-        else:
-            st.info(
-                "Buttons disabled on non-Windows.  \n"
-                "Use a cron job to schedule `auto_sync.py` instead."
-            )
-
-    st.divider()
-
-    # ── Auto-Sync Log viewer ──────────────────────────────────────────────────
-    st.subheader("Auto-Sync Log")
     log_path = scheduler._app_dir() / "data" / "auto_sync.log"
-    if log_path.exists():
-        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
-            lines = fh.readlines()
-        recent = "".join(reversed(lines[-80:]))
-        st.code(recent, language=None)
-        st.caption(
-            f"Log: `{log_path}`  ·  showing last {min(80, len(lines))} of {len(lines)} lines"
+
+    if not log_path.exists():
+        st.info(
+            "No log file yet — it will appear here after the first auto-sync run.  \n"
+            f"Expected path: `{log_path}`"
         )
     else:
-        st.info("No log file yet — it will appear here after the first auto-sync run.")
+        with open(log_path, "r", encoding="utf-8", errors="replace") as fh:
+            all_lines = fh.readlines()
 
-    st.divider()
+        total_lines = len(all_lines)
 
-    # ── How it works explainer ────────────────────────────────────────────────
-    with st.expander("ℹ️ How Auto-Sync works"):
-        st.markdown("""
-**Auto-Sync** uses **Windows Task Scheduler** to run `auto_sync.py` silently
-in the background — no Streamlit window needed.
+        # ── Line count selector ───────────────────────────────────────────────
+        count_col, _ = st.columns([2, 4])
+        with count_col:
+            LINE_OPTIONS = {
+                "Last 100":   100,
+                "Last 500":   500,
+                "Last 1 000": 1000,
+                "All":        None,
+            }
+            # Default to whichever option is closest to 100 but still valid
+            default_label = "Last 100" if total_lines >= 100 else "All"
+            chosen_label  = st.selectbox(
+                "Show lines",
+                list(LINE_OPTIONS.keys()),
+                index=list(LINE_OPTIONS.keys()).index(default_label),
+            )
+        n_lines = LINE_OPTIONS[chosen_label]
 
-**Trigger modes:**
+        if n_lines is None or n_lines >= total_lines:
+            shown_lines = all_lines
+            n_shown     = total_lines
+        else:
+            shown_lines = all_lines[-n_lines:]
+            n_shown     = n_lines
 
-| Mode | When does it run? |
-|---|---|
-| **Daily at set time** | Once per day at your chosen hour. If the PC was off, `StartWhenAvailable` fires it on the next startup. |
-| **At every startup / login** | Runs every time you log in or boot. The script exits immediately if prices are already fresh today. |
-| **Every hour** | Checks every hour; skips work silently if today's prices are already synced. |
+        st.caption(
+            f"Log: `{log_path}`  ·  showing last **{n_shown}** of **{total_lines}** lines"
+        )
 
-**What it does each run:**
-- Fetches the latest CSFloat floor prices for every item in your inventory
-- Fetches Steam market prices
-- Saves everything to the database exactly like a manual Sync Prices run
-- Writes a detailed log to `data/auto_sync.log`
-- Records the run in **Sync History** with trigger = 🤖 Auto
-
-**Changing the mode or time:**
-Select a new mode above and click **Update Schedule**.
-You can also edit it directly in Windows Task Scheduler (`taskschd.msc`)
-under the task name `CS2SkInvest_AutoSync`.
-
-**Removing:**
-Click **Remove Task**. Your sync history and price data are not affected.
-        """)
+        # Newest lines on top
+        log_text = "".join(reversed(shown_lines))
+        st.code(log_text, language=None)

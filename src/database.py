@@ -468,3 +468,193 @@ def get_last_two_snapshots() -> tuple[dict | None, dict | None]:
     latest   = _to_dict(rows[0]) if len(rows) >= 1 else None
     previous = _to_dict(rows[1]) if len(rows) >= 2 else None
     return latest, previous
+
+
+def reset_todays_pricing() -> dict:
+    """
+    Wipe all today's pricing data so the day can be re-synced from scratch.
+
+    What gets deleted / reset:
+      1. price_history rows for today          → items appear as "unpriced"
+      2. sync_log rows for today               → today's run history gone
+      3. sync_runs rows for today              → run entries gone
+      4. portfolio_snapshots rows for today    → charts won't show today
+      5. meta key last_price_sync              → rolled back to yesterday's value
+                                                 (stored as last_day_price_sync
+                                                  so the UI can show it)
+
+    Returns a dict with counts of deleted rows per table.
+    """
+    today = date.today().isoformat()
+
+    with get_conn() as conn:
+        # Count before deleting so we can report back
+        ph_count = conn.execute(
+            "SELECT COUNT(*) FROM price_history WHERE substr(timestamp,1,10) = ?",
+            (today,),
+        ).fetchone()[0]
+
+        sl_count = conn.execute(
+            "SELECT COUNT(*) FROM sync_log WHERE substr(timestamp,1,10) = ?",
+            (today,),
+        ).fetchone()[0]
+
+        # sync_runs may or may not exist depending on schema version
+        try:
+            sr_count = conn.execute(
+                "SELECT COUNT(*) FROM sync_runs WHERE substr(timestamp,1,10) = ?",
+                (today,),
+            ).fetchone()[0]
+        except Exception:
+            sr_count = 0
+
+        ps_count = conn.execute(
+            "SELECT COUNT(*) FROM portfolio_snapshots WHERE substr(timestamp,1,10) = ?",
+            (today,),
+        ).fetchone()[0]
+
+        # Find the latest price_sync from *before* today to roll back to
+        prev_sync_row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'last_price_sync'"
+        ).fetchone()
+        prev_sync = prev_sync_row[0] if prev_sync_row else None
+
+        # Stash it as last_day_price_sync (yesterday's last known good sync)
+        if prev_sync:
+            conn.execute(
+                "INSERT INTO meta (key,value) VALUES ('last_day_price_sync', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (prev_sync,),
+            )
+
+        # Find the most recent sync timestamp from yesterday or earlier in price_history
+        yesterday_sync_row = conn.execute(
+            "SELECT MAX(timestamp) FROM price_history "
+            "WHERE substr(timestamp,1,10) < ?",
+            (today,),
+        ).fetchone()
+        yesterday_ts = yesterday_sync_row[0] if yesterday_sync_row and yesterday_sync_row[0] else None
+
+        # Update last_price_sync to yesterday's value (or remove if none exists)
+        if yesterday_ts:
+            # Format to YYYY-MM-DD HH:MM
+            conn.execute(
+                "INSERT INTO meta (key,value) VALUES ('last_price_sync', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (yesterday_ts[:16],),
+            )
+        else:
+            conn.execute("DELETE FROM meta WHERE key = 'last_price_sync'")
+
+        # Delete today's data
+        conn.execute(
+            "DELETE FROM price_history WHERE substr(timestamp,1,10) = ?", (today,)
+        )
+        conn.execute(
+            "DELETE FROM sync_log WHERE substr(timestamp,1,10) = ?", (today,)
+        )
+        try:
+            conn.execute(
+                "DELETE FROM sync_runs WHERE substr(timestamp,1,10) = ?", (today,)
+            )
+        except Exception:
+            pass
+        conn.execute(
+            "DELETE FROM portfolio_snapshots WHERE substr(timestamp,1,10) = ?", (today,)
+        )
+
+    return {
+        "price_history":      ph_count,
+        "sync_log":           sl_count,
+        "sync_runs":          sr_count,
+        "portfolio_snapshots": ps_count,
+        "rolled_back_to":     yesterday_ts[:16] if yesterday_ts else None,
+    }
+
+
+# ── Sync running status ───────────────────────────────────────────────────────
+# Stored in meta:
+#   sync_running        : "true" | "false"
+#   sync_started_at     : ISO timestamp of when the current/last sync began
+#   sync_progress_pct   : "0.0"–"1.0" (string) — updated during sync
+#   sync_progress_msg   : latest progress message
+#
+# A sync is considered "stuck" if sync_running == "true" and
+# sync_started_at is older than SYNC_STUCK_THRESHOLD_HOURS hours.
+
+SYNC_STUCK_THRESHOLD_HOURS = 3
+
+
+def sync_status_set(
+    running: bool,
+    started_at: str | None = None,
+    pct: float | None = None,
+    msg: str | None = None,
+):
+    """
+    Update the sync-running status in meta.
+    Call with running=True when a sync starts, running=False when it ends.
+    pct and msg are optional live progress fields written during the sync.
+    """
+    with get_conn() as conn:
+        def _set(k, v):
+            conn.execute(
+                "INSERT INTO meta (key,value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (k, v),
+            )
+        _set("sync_running", "true" if running else "false")
+        if started_at is not None:
+            _set("sync_started_at", started_at)
+        if pct is not None:
+            _set("sync_progress_pct", str(round(pct, 4)))
+        if msg is not None:
+            _set("sync_progress_msg", msg[:300])
+
+
+def sync_status_get() -> dict:
+    """
+    Return current sync status as a dict:
+      running     : bool
+      started_at  : str | None
+      pct         : float  (0.0–1.0)
+      msg         : str
+      stuck       : bool   (running but started > SYNC_STUCK_THRESHOLD_HOURS ago)
+    """
+    keys = ("sync_running", "sync_started_at", "sync_progress_pct", "sync_progress_msg")
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT key, value FROM meta WHERE key IN ({})".format(
+                ",".join("?" * len(keys))
+            ),
+            keys,
+        ).fetchall()
+    data = {r[0]: r[1] for r in rows}
+
+    running_raw = data.get("sync_running", "false")
+    running     = running_raw == "true"
+    started_at  = data.get("sync_started_at")
+    pct         = float(data.get("sync_progress_pct", "0") or "0")
+    msg         = data.get("sync_progress_msg", "")
+
+    stuck = False
+    if running and started_at:
+        try:
+            from datetime import datetime, timezone
+            started_dt = datetime.fromisoformat(started_at)
+            # Make both aware or both naive
+            now = datetime.now()
+            if started_dt.tzinfo is not None:
+                now = datetime.now(timezone.utc)
+            diff_h = (now - started_dt).total_seconds() / 3600
+            stuck = diff_h > SYNC_STUCK_THRESHOLD_HOURS
+        except Exception:
+            pass
+
+    return {
+        "running":    running and not stuck,
+        "started_at": started_at,
+        "pct":        pct,
+        "msg":        msg,
+        "stuck":      stuck,
+    }

@@ -84,7 +84,7 @@ Click **📦 Sync Inventory** in the sidebar. This fetches your complete CSFloat
 Click **💰 Sync Prices** in the sidebar, then click **▶ Sync Prices** on the page. This fetches the current floor price from CSFloat and the Steam Community Market for every item in your inventory. Depending on the size of your inventory, this can take several minutes due to API rate limiting.
 
 ### 3. (Optional) Set up Auto-Sync
-Go to **🕘 Sync History → Auto-Sync Setup**. Choose a trigger mode and click **Enable Auto-Sync**:
+Go to **💰 Sync Prices** and scroll down to the **Auto-Sync Setup** section. Choose a trigger mode and click **Enable Auto-Sync**:
 
 | Mode | When it runs |
 |------|-------------|
@@ -104,7 +104,8 @@ To verify the task is registered correctly: `Win + R` → `taskschd.msc` → Tas
 | **💸 Realized P&L** | Sold-item tracker. Avg buy, avg sell, qty sold, cost, revenue, P&L, and return % for every item you have sold. |
 | **📊 Charts** | Portfolio value over time, per-item price history, P&L bar chart, and type distribution. |
 | **✏️ Transactions** | Manual transaction ledger for items purchased or sold outside CSFloat. Supports multiple currencies with live exchange rates. |
-| **🕘 Sync History** | Browse every past sync run and see per-item results. Also where you configure Auto-Sync. |
+| **💰 Sync Prices** | Manually trigger a price sync, monitor live progress, retry items with missing prices, reset today's data, and configure Auto-Sync. |
+| **📋 Price History** | Browse every past sync run and see per-item results. View the raw auto-sync log with adjustable line count. |
 
 ---
 
@@ -146,8 +147,8 @@ CS2Skinvest/
       charts.py         ← Charts & Analytics page
       realized_pnl.py   ← Realized P&L page
       transactions.py   ← Transactions page
-      sync_page.py      ← Sync Prices page
-      sync_history.py   ← Sync History & Auto-Sync Setup page
+      sync_page.py      ← Sync Prices page (manual sync + auto-sync setup)
+      sync_history.py   ← Price History page (sync history browser + sync log viewer)
   data/               ← created on first run, gitignored
     tracker.db        ← your portfolio database
     auto_sync.log     ← background sync log
@@ -170,6 +171,16 @@ The `data/` folder and `.env` file are **never synced to GitHub** — all your p
 ---
 
 ## Changelog
+
+### v1.2.0 — 2026-05-10
+- Sync Prices page redesigned — manual sync, live progress, and Auto-Sync Setup are now all in one place
+- Sync History renamed to Price History — contains two tabs: sync run browser and a raw auto-sync log viewer (adjustable line count: 100 / 500 / 1 000 / All)
+- Live sync progress no longer forces a full page reload — progress bar updates in place using a background fragment; navigating away doesn't interrupt the sync and the results are waiting when you come back
+- Manual syncs are now written to `auto_sync.log` alongside auto-sync entries
+- Reset Today's Pricing button — wipes all of today's price records, sync log entries and portfolio snapshots, and rolls `last_price_sync` back to yesterday so the whole day can be re-synced cleanly
+- Sync running state stored in the database — prevents auto-sync and manual sync from running simultaneously; a stuck-sync guard clears the flag automatically after 3 hours
+- Auto-Sync requires administrator rights — a clear warning is shown when the app is not running elevated, with instructions on how to fix it
+- Sync Prices button is visually muted when disabled
 
 ### v1.1.0 — 2026-05-08
 - Added Realized P&L page — tracks sold items with avg buy, avg sell, P&L and return %

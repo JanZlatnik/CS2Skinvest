@@ -65,7 +65,7 @@ charts_page       = st.Page("pages/charts.py",        title="Charts",       icon
 realized_pnl_page = st.Page("pages/realized_pnl.py",  title="Realized P&L", icon="💸")
 transactions_page = st.Page("pages/transactions.py",  title="Transactions", icon="✏️")
 sync_page         = st.Page("pages/sync_page.py",     title="Sync Prices",  icon="💰")
-sync_history_page = st.Page("pages/sync_history.py",  title="Sync History", icon="🕘")
+sync_history_page = st.Page("pages/sync_history.py",  title="Price History", icon="📋")
 
 pg = st.navigation(
     [portfolio_page, charts_page, realized_pnl_page,
@@ -137,7 +137,7 @@ with st.sidebar:
     st.page_link(charts_page,       label="Charts",       use_container_width=True)
     st.page_link(realized_pnl_page, label="Realized P&L", use_container_width=True)
     st.page_link(transactions_page, label="Transactions", use_container_width=True)
-    st.page_link(sync_history_page, label="Sync History", use_container_width=True)
+    st.page_link(sync_history_page, label="Price History", use_container_width=True)
 
     st.divider()
 
@@ -183,7 +183,7 @@ with st.sidebar:
             "<span style='color:#aaa;font-size:0.82rem'>⚪ Auto-Sync off</span>",
             unsafe_allow_html=True,
         )
-        st.caption("Set up in **🕘 Sync History**")
+        st.caption("Set up in **💰 Sync Prices**")
 
     st.divider()
 
