@@ -172,6 +172,9 @@ The `data/` folder and `.env` file are **never synced to GitHub** — all your p
 
 ## Changelog
 
+### v1.2.1 — 2026-05-10
+- Charts page visual improvements — source toggles (CSFloat / Steam) replace radio buttons, both sources now display simultaneously, thicker chart lines
+
 ### v1.2.0 — 2026-05-10
 - Sync Prices page redesigned — manual sync, live progress, and Auto-Sync Setup are now all in one place
 - Sync History renamed to Price History — contains two tabs: sync run browser and a raw auto-sync log viewer (adjustable line count: 100 / 500 / 1 000 / All)

@@ -30,29 +30,38 @@ with tab1:
         ph["timestamp"] = pd.to_datetime(ph["timestamp"])
         has_steam_hist  = ph["steam_value"].gt(0).any()
 
-        src2 = "CSFloat"
-        if has_steam_hist:
-            _, src_col = st.columns([4, 1])
-            with src_col:
-                src2 = st.radio("Source", ["CSFloat", "Steam"], horizontal=True, key="src_port")
-
-        val_col = "cf_value" if src2 == "CSFloat" else "steam_value"
-        color   = "#06d6a0"  if src2 == "CSFloat" else "#4c9be8"
+        _, csfloat_col, steam_col = st.columns([14, 1, 1])
+        with csfloat_col:
+            show_cf    = st.toggle("CSFloat",  value=True,            key="port_cf")
+        with steam_col:
+            show_steam = st.toggle("Steam",    value=has_steam_hist,  key="port_steam",disabled=not has_steam_hist)
 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=ph["timestamp"], y=ph[val_col],
-            name=f"Value ({src2})", fill="tozeroy",
-            line=dict(color=color, width=2, shape="spline"),
-            hovertemplate="%{x|%Y-%m-%d}<br>$%{y:,.2f}<extra></extra>",
-        ))
+
+        if show_cf:
+            fig.add_trace(go.Scatter(
+                x=ph["timestamp"], y=ph["cf_value"],
+                name="Value (CSFloat)", fill="tonexty",
+                line=dict(color="#06d6a0", width=4, shape="spline"),
+                hovertemplate="%{x|%Y-%m-%d}<br>$%{y:,.2f}<extra></extra>",
+            ))
+
+        if show_steam and has_steam_hist:
+            fig.add_trace(go.Scatter(
+                x=ph["timestamp"], y=ph["steam_value"],
+                name="Value (Steam)",
+                line=dict(color="#4c9be8", width=4, shape="spline"),
+                hovertemplate="%{x|%Y-%m-%d}<br>$%{y:,.2f}<extra></extra>",
+            ))
+
         fig.add_trace(go.Scatter(
             x=ph["timestamp"], y=ph["total_cost"],
-            name="Cost", line=dict(color="#f4a261", width=2, dash="dash", shape="spline"),
+            name="Cost", line=dict(color="#f4a261", width=4, dash="dashdot", shape="spline"),
             hovertemplate="%{x|%Y-%m-%d}<br>Cost: $%{y:,.2f}<extra></extra>",
         ))
+
         fig.update_layout(
-            title=f"Portfolio value vs. cost  [{src2}]",
+            title="Portfolio value vs. cost",
             xaxis_title="Date", yaxis_title="USD",
             hovermode="x unified",
             height=CHART_HEIGHT,
@@ -70,7 +79,7 @@ with tab1:
                     dict(step="all", label="All"),
                 ]
             ),
-            rangeslider=dict(visible=False), 
+            rangeslider=dict(visible=False),
         )
         st.plotly_chart(fig, width='stretch')
         if not has_steam_hist:
@@ -91,59 +100,105 @@ with tab2:
 
         labels       = {row["item_key"]: _label(row) for _, row in portfolio.iterrows()}
         label_to_key = {v: k for k, v in labels.items()}
+        all_labels   = sorted(label_to_key.keys())
 
-        col_sel, col_src = st.columns([3, 1])
+        col_sel, _, col_csfloat, col_steam = st.columns([13,1,1,1])
+
         with col_sel:
-            selected_label = st.selectbox("Select item", sorted(label_to_key.keys()))
-        with col_src:
-            src = st.radio("Source", ["CSFloat", "Steam"], horizontal=True)
+            search = st.text_input("🔍 Search item", placeholder="e.g. AWP, Karambit, Fade…", key="item_search")
+            filtered_labels = [l for l in all_labels if search.lower() in l.lower()] if search else all_labels
+            if filtered_labels:
+                selected_label = st.selectbox("Select item", filtered_labels, key="item_select")
+            else:
+                st.caption("No items match your search.")
+                selected_label = None
 
-        selected_key = label_to_key[selected_label]
-        source_code  = "cf" if src == "CSFloat" else "steam"
-        history      = database.get_price_history_for_item(selected_key, source_code)
+        with col_csfloat:
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            show_cf_item    = st.toggle("CSFloat", value=True,  key="item_cf")
+        with col_steam:
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            st.write("")
+            show_steam_item = st.toggle("Steam",   value=True,  key="item_steam")
 
-        if not history.empty:
-            history["timestamp"] = pd.to_datetime(history["timestamp"])
-            avg_cost = portfolio.loc[portfolio["item_key"] == selected_key, "avg_cost"].iloc[0]
+        if selected_label is not None:
+            selected_key = label_to_key[selected_label]
+            avg_cost     = portfolio.loc[portfolio["item_key"] == selected_key, "avg_cost"].iloc[0]
 
             fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(
-                x=history["timestamp"], y=history["price_usd"],
-                mode="lines+markers",
-                name=f"{src} floor",
-                line=dict(color="#00b4d8" if src == "CSFloat" else "#4c9be8", width=2, shape="spline"),
-                marker=dict(size=5),
-                hovertemplate="%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
-            ))
+
+            if show_cf_item:
+                hist_cf = database.get_price_history_for_item(selected_key, "cf")
+                if not hist_cf.empty:
+                    hist_cf["timestamp"] = pd.to_datetime(hist_cf["timestamp"])
+                    fig2.add_trace(go.Scatter(
+                        x=hist_cf["timestamp"], y=hist_cf["price_usd"],
+                        mode="lines+markers",
+                        name="CSFloat floor",
+                        line=dict(color="#06d6a0", width=4, shape="spline"),
+                        marker=dict(size=5),
+                        hovertemplate="%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
+                    ))
+                else:
+                    st.caption("No CSFloat price history yet. Run **Sync Prices**.")
+
+            if show_steam_item:
+                hist_steam = database.get_price_history_for_item(selected_key, "steam")
+                if not hist_steam.empty:
+                    hist_steam["timestamp"] = pd.to_datetime(hist_steam["timestamp"])
+                    fig2.add_trace(go.Scatter(
+                        x=hist_steam["timestamp"], y=hist_steam["price_usd"],
+                        mode="lines+markers",
+                        name="Steam floor",
+                        line=dict(color="#4c9be8", width=4, shape="spline"),
+                        marker=dict(size=5),
+                        hovertemplate="%{x|%Y-%m-%d}<br>$%{y:.2f}<extra></extra>",
+                    ))
+                else:
+                    st.caption("No Steam price history yet. Run **Sync Prices**.")
+
             fig2.add_hline(
-                y=avg_cost, line_dash="dash", line_color="#f4a261",
+                y=avg_cost, line_dash="dashdot",
+                line=dict(color="#f4a261", width=4),
                 annotation_text=f"Avg buy  ${avg_cost:.2f}",
-                annotation_position="bottom right",
+                annotation_position="bottom right"
             )
             fig2.update_layout(
                 title=selected_label,
                 xaxis_title="Date", yaxis_title="Price (USD)",
                 height=CHART_HEIGHT,
                 hovermode="x unified",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
             )
             fig2.update_xaxes(
-            rangeselector=dict(
-                buttons=[
-                    dict(count=7,  label="1W",  step="day",   stepmode="backward"),
-                    dict(count=1,  label="1M",  step="month", stepmode="backward"),
-                    dict(count=3,  label="3M",  step="month", stepmode="backward"),
-                    dict(count=1,  label="YTD", step="year",  stepmode="todate"),
-                    dict(count=1,  label="1Y",  step="year",  stepmode="backward"),
-                    dict(step="all", label="All"),
-                ]
-            ),
-            rangeslider=dict(visible=False), 
-        )
-            st.plotly_chart(fig2, width='stretch')
-        else:
-            tip = "Run **Sync Prices**." if src == "CSFloat" else "No Steam data yet — run **Sync Prices**."
-            st.info(f"No {src} price history yet. {tip}")
+                rangeselector=dict(
+                    buttons=[
+                        dict(count=7,  label="1W",  step="day",   stepmode="backward"),
+                        dict(count=1,  label="1M",  step="month", stepmode="backward"),
+                        dict(count=3,  label="3M",  step="month", stepmode="backward"),
+                        dict(count=1,  label="YTD", step="year",  stepmode="todate"),
+                        dict(count=1,  label="1Y",  step="year",  stepmode="backward"),
+                        dict(step="all", label="All"),
+                    ]
+                ),
+                rangeslider=dict(visible=False),
+            )
+            if show_cf_item or show_steam_item:
+                st.plotly_chart(fig2, width='stretch')
     else:
         st.info("No inventory data. Sync Inventory first.")
 
@@ -166,7 +221,6 @@ with tab3:
         if sel_type != "All":
             pl = pl[portfolio["item_type"] == sel_type]
 
-        # Height grows proportionally — each bar ~38 px, +80 for title/axes.
         row_height   = 38
         chart_height = max(CHART_HEIGHT, len(pl) * row_height + 80)
 
@@ -210,8 +264,7 @@ with tab4:
                 color_discrete_sequence=px.colors.qualitative.Set2,
             )
             fig4.update_traces(
-                textfont=dict(size=15, family="Arial Black"), 
-
+                textfont=dict(size=15, family="Arial Black"),
                 textfont_size=14,
             )
             fig4.update_layout(
